@@ -303,3 +303,25 @@ describe("runManageBatch", () => {
     expect(JSON.parse(String(calls.at(-1)?.init.body))).toMatchObject({ emailId: "b", permanent: false });
   });
 });
+
+describe("get_image", () => {
+  it("posts the url and returns the base64 payload", async () => {
+    stubFetch(() =>
+      jsonResponse({ ok: true, result: { contentType: "image/png", bytes: 3, cached: false, dataBase64: "AAAA" } }),
+    );
+    const api = new ScopedApi(mailboxSession());
+    const result = await api.getImage(MAILBOX_ID, "https://cdn.example.com/a.png");
+    expect(result.contentType).toBe("image/png");
+    expect(result.dataBase64).toBe("AAAA");
+    expect(calls[0]?.url).toBe(`${BASE}/api/v1/scoped/get_image`);
+    expect(JSON.parse(String(calls[0]?.init.body))).toMatchObject({ url: "https://cdn.example.com/a.png" });
+  });
+
+  it("omits mailboxId under a scoped key", async () => {
+    stubFetch(() => jsonResponse({ ok: true, result: { contentType: "image/png", dataBase64: "AA==" } }));
+    const api = new ScopedApi(mailboxSession());
+    await api.getImage(null, "https://cdn.example.com/b.png");
+    const body = JSON.parse(String(calls[0]?.init.body)) as Record<string, unknown>;
+    expect(body).not.toHaveProperty("mailboxId");
+  });
+});

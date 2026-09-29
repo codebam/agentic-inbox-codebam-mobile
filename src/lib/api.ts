@@ -182,6 +182,14 @@ export type BatchAction =
   | { kind: "move"; folderId: string }
   | { kind: "delete"; permanent: boolean };
 
+/** One proxied message image, ready to inline as a data: URL. */
+export interface ImageResult {
+  contentType: string;
+  bytes?: number;
+  cached?: boolean;
+  dataBase64: string;
+}
+
 export interface ComposeBody {
   to: string;
   subject: string;
@@ -305,6 +313,15 @@ export class ScopedApi {
 
   async getAttachment(mailboxId: string | null, attachmentId: string): Promise<AttachmentResult> {
     return this.call<AttachmentResult>("get_attachment", this.mailboxBody(mailboxId, { attachmentId }));
+  }
+
+  /**
+   * One remote image of a message, relayed through the deployment's SSRF
+   * guard and cache and answered as base64 (read scope). The app inlines
+   * the bytes as a data: URL; the sender never sees the device.
+   */
+  async getImage(mailboxId: string | null, url: string): Promise<ImageResult> {
+    return this.call<ImageResult>("get_image", this.mailboxBody(mailboxId, { url }));
   }
 
   // ── manage tools ─────────────────────────────────────────────────────

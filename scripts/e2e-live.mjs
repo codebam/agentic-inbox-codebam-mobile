@@ -129,6 +129,30 @@ try {
   await harness.waitAria("Show plain text");
   console.log("8. plain-text toggle works");
 
+  // 8a. Message images: a message that carries remote images gets them
+  // fetched through the deployment's get_image relay and inlined as data:
+  // URLs; a message without any keeps the text placeholders. Either state
+  // is fine — this leg reports which one the fixture message is in.
+  const imageState = await page
+    .waitForFunction(
+      () => {
+        const srcdoc = document.querySelector("iframe")?.getAttribute("srcdoc") ?? "";
+        if (srcdoc.includes("data:image")) return "loaded";
+        if (srcdoc.includes("ai-image")) return "placeholder";
+        return false;
+      },
+      { timeout: 30000, polling: 500 },
+    )
+    .then((handle) => handle.jsonValue())
+    .catch(() => null);
+  if (imageState === "loaded") {
+    console.log("8a. message images loaded through the relay (data: URLs inlined)");
+  } else if (imageState === "placeholder") {
+    console.log("8a. message carries no loadable remote images; placeholders shown");
+  } else {
+    console.log("8a. image state not observed in the window (message may still be resolving)");
+  }
+
   // 8b. Manage bar: a star tap must reach the live surface and come back
   // 200 (manage-scoped key; the label then flips and the second tap
   // restores it) or 403 (a key without the scope; the refusal is shown).
@@ -238,6 +262,42 @@ try {
     await harness.clickAria("Cancel selection");
   }
   await harness.waitGone("selected", 15000);
+
+  // 10c. Message images end to end: send ourselves a message carrying one
+  // remote image, wait for it to land in the inbox, open it in the app and
+  // require the relayed image to appear as a data: URL in the rendered
+  // document. Then remove the test message (trash, then permanent).
+  const stamp = Date.now();
+  const imageSubject = `E2E image check ${stamp}`;
+  await apiCall("send_email", {
+    mailboxId: MAILBOX,
+    to: MAILBOX,
+    subject: imageSubject,
+    bodyHtml:
+      '<p>Image relay check.</p><img src="https://httpbin.org/image/png" alt="relay check">',
+  });
+  let imageEmail = null;
+  for (let attempt = 0; attempt < 30 && !imageEmail; attempt += 1) {
+    const listed = await apiCall("list_emails", { mailboxId: MAILBOX, folder: "inbox", limit: 10 });
+    const messages = Array.isArray(listed) ? listed : (listed?.emails ?? []);
+    imageEmail = messages.find((email) => String(email.subject ?? "").includes(imageSubject)) ?? null;
+    if (!imageEmail) await new Promise((done) => setTimeout(done, 3000));
+  }
+  assert(imageEmail && imageEmail.id, "the image-check message arrived in the inbox");
+  await page.goto(`${MAILBOX_URL}/e/${encodeURIComponent(imageEmail.id)}`, { waitUntil: "networkidle2" });
+  await harness.waitText(imageSubject, 30000);
+  const relayed = await page
+    .waitForFunction(
+      () => (document.querySelector("iframe")?.getAttribute("srcdoc") ?? "").includes("data:image"),
+      { timeout: 45000, polling: 500 },
+    )
+    .then(() => true)
+    .catch(() => false);
+  assert(relayed, "the message image was relayed and inlined as a data: URL");
+  await harness.shot("12-images");
+  console.log("10c. message image relayed through get_image and inlined as a data: URL");
+  await apiCall("delete_email", { mailboxId: MAILBOX, emailId: imageEmail.id });
+  await apiCall("delete_email", { mailboxId: MAILBOX, emailId: imageEmail.id, permanent: true });
 
   // 11. Settings, then disconnect.
   await page.goto(`${URL_BASE}/m`, { waitUntil: "networkidle2" });

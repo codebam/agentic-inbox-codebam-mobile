@@ -9,20 +9,20 @@ import { AttachmentBar } from "@/components/attachment-bar";
 import { Banner } from "@/components/banner";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { EmailBody } from "@/components/email-body";
-import { HeaderIconButton } from "@/components/header-icon-button";
 import { Loading } from "@/components/loading";
 import { ThemedText } from "@/components/themed-text";
 import { Spacing } from "@/constants/theme";
 import { useColorScheme } from "@/hooks/use-color-scheme";
 import { useTheme } from "@/hooks/use-theme";
 import { ApiError, type EmailFull } from "@/lib/api";
-import { buildEmailDocument, plainTextToHtml } from "@/lib/email-html";
+import { buildEmailDocument, htmlToPlainText, plainTextToHtml } from "@/lib/email-html";
 import { folderDisplayName, formatFullDate, replySubject, senderAddress, senderName, truncate } from "@/lib/format";
 import { moveTargets, oneClickUnsubscribeTarget, snoozePresets } from "@/lib/manage";
 import {
   useDeleteEmail,
   useDiscardDraft,
   useEmail,
+  useEmailImages,
   useMarkEmailRead,
   useMoveEmail,
   useSetSenderPolicy,
@@ -70,6 +70,7 @@ export default function EmailScreen() {
   const [notice, setNotice] = useState<string | null>(null);
 
   const email = emailQuery.data;
+  const images = useEmailImages(api, mailbox, email?.body ?? null);
 
   // Opening a message marks it read, once per message and never for a draft.
   // It is a background convenience: an error here stays quiet and leaves the
@@ -105,8 +106,9 @@ export default function EmailScreen() {
       folderName: email.folder_name ?? folderDisplayName(email.folder_id ?? ""),
       bodyHtml: html,
       scheme,
+      images: images.data?.images ?? null,
     });
-  }, [email, scheme]);
+  }, [email, images.data, scheme]);
 
   if (!ready) return <Loading />;
   if (!session || !api) return <Redirect href="/connect" />;
@@ -248,13 +250,6 @@ export default function EmailScreen() {
       <Stack.Screen
         options={{
           title: truncate(email?.subject?.trim() || "Message", 42),
-          headerRight: () => (
-            <HeaderIconButton
-              name={plainText ? "reader-outline" : "code-slash"}
-              label={plainText ? "Show formatted message" : "Show plain text"}
-              onPress={() => setPlainText((value) => !value)}
-            />
-          ),
         }}
       />
 
@@ -317,6 +312,42 @@ export default function EmailScreen() {
             </View>
           ) : null}
 
+          <View style={[styles.viewSwitch, { borderBottomColor: theme.border }]}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Show formatted message"
+              onPress={() => setPlainText(false)}
+              style={[styles.viewSwitchButton, !plainText && { backgroundColor: theme.tint }]}>
+              <ThemedText
+                type="small"
+                style={!plainText ? styles.viewSwitchActive : { color: theme.textSecondary }}>
+                Formatted
+              </ThemedText>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Show plain text"
+              onPress={() => setPlainText(true)}
+              style={[styles.viewSwitchButton, plainText && { backgroundColor: theme.tint }]}>
+              <ThemedText
+                type="small"
+                style={plainText ? styles.viewSwitchActive : { color: theme.textSecondary }}>
+                Plain text
+              </ThemedText>
+            </Pressable>
+          </View>
+
+          {!plainText && images.isLoading ? (
+            <ThemedText type="small" themeColor="textSecondary" style={styles.imageNote}>
+              Loading images…
+            </ThemedText>
+          ) : null}
+          {!plainText && !images.isLoading && (images.data?.failed ?? 0) > 0 ? (
+            <ThemedText type="small" themeColor="textSecondary" style={styles.imageNote}>
+              {images.data?.failed} of {images.data?.total} images did not load.
+            </ThemedText>
+          ) : null}
+
           {plainText ? (
             <ScrollView style={styles.bodyWrap} contentContainerStyle={styles.plainContent}>
               <ThemedText type="smallBold">{email.subject?.trim() || "(no subject)"}</ThemedText>
@@ -324,12 +355,12 @@ export default function EmailScreen() {
                 {senderName(email.sender)} · {formatFullDate(email.date)}
               </ThemedText>
               <ThemedText style={styles.plainBody} selectable>
-                {email.body_text?.trim() || "(no content)"}
+                {email.body_text?.trim() || htmlToPlainText(email.body ?? "") || "(no content)"}
               </ThemedText>
             </ScrollView>
           ) : (
             <View style={styles.bodyWrap}>
-              <EmailBody html={bodyHtml} />
+              <EmailBody html={bodyHtml} background={theme.background} />
             </View>
           )}
 
@@ -546,6 +577,25 @@ const styles = StyleSheet.create({
   manageLabel: {
     fontSize: 11,
     lineHeight: 14,
+  },
+  viewSwitch: {
+    flexDirection: "row",
+    gap: Spacing.one,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.two,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  viewSwitchButton: {
+    borderRadius: 999,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: 5,
+  },
+  viewSwitchActive: {
+    color: "#ffffff",
+  },
+  imageNote: {
+    paddingHorizontal: Spacing.three,
+    paddingTop: Spacing.two,
   },
   bodyWrap: {
     flex: 1,

@@ -1,8 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from "expo-router";
 import { StatusBar } from "expo-status-bar";
-import { useColorScheme } from "react-native";
+import * as SystemUI from "expo-system-ui";
+import { useEffect } from "react";
+import { Platform, useColorScheme } from "react-native";
 
+import { useTheme } from "@/hooks/use-theme";
 import { SessionProvider } from "@/lib/session";
 
 const queryClient = new QueryClient({
@@ -18,6 +21,15 @@ const queryClient = new QueryClient({
 export default function RootLayout() {
   const scheme = useColorScheme();
   const theme = scheme === "dark" ? DarkTheme : DefaultTheme;
+  const appTheme = useTheme();
+
+  // Keep the Android window behind every screen the same colour as the
+  // screens themselves: a white window shows through as a flash whenever a
+  // screen pops, most visibly over the message view's dark WebView.
+  useEffect(() => {
+    if (Platform.OS !== "android") return;
+    void SystemUI.setBackgroundColorAsync(appTheme.background).catch(() => {});
+  }, [appTheme.background]);
 
   return (
     <ThemeProvider value={theme}>
@@ -27,6 +39,7 @@ export default function RootLayout() {
             screenOptions={{
               headerStyle: { backgroundColor: theme.colors.card },
               headerTintColor: theme.colors.text,
+              contentStyle: { backgroundColor: appTheme.background },
             }}>
             <Stack.Screen name="index" options={{ headerShown: false }} />
             <Stack.Screen name="connect" options={{ headerShown: false }} />

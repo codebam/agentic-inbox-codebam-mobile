@@ -4,6 +4,9 @@
  */
 
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useMemo } from "react";
+
+import { extractImageUrls, MAX_BODY_IMAGES } from "./email-html";
 
 import {
   runManageBatch,
@@ -270,5 +273,40 @@ export function useManageBatch(api: ScopedApi | null, mailboxId: string) {
     }): Promise<{ done: number }> =>
       runManageBatch(requireApi(api), mailboxId, input.ids, input.action, input.onProgress),
     onSettled: () => invalidateMailbox(client, api, mailboxId),
+  });
+}
+
+/**
+ * The remote images of one message, fetched through the scoped get_image
+ * tool and keyed by URL so the document builder can inline exactly the
+ * ones that loaded. Sequential: an image is small, and ordering keeps the
+ * deployment's per-request accounting simple. A failure only drops that
+ * image back to its text placeholder.
+ */
+export function useEmailImages(api: ScopedApi | null, mailboxId: string, bodyHtml: string | null | undefined) {
+  const urls = useMemo(() => extractImageUrls(bodyHtml ?? "").slice(0, MAX_BODY_IMAGES), [bodyHtml]);
+  return useQuery({
+    queryKey: ["email-images", api?.session.baseUrl ?? "", mailboxId, urls],
+    enabled: Boolean(api && mailboxId && urls.length > 0),
+    staleTime: 5 * 60_000,
+    gcTime: 5 * 60_000,
+    queryFn: async () => {
+      const scoped = requireApi(api);
+      const images = new Map<string, string>();
+      let failed = 0;
+      for (const url of urls) {
+        try {
+          const result = await scoped.getImage(mailboxId, url);
+          if (result.dataBase64 && result.contentType) {
+            images.set(url, `data:${result.contentType};base64,${result.dataBase64}`);
+          } else {
+            failed += 1;
+          }
+        } catch {
+          failed += 1;
+        }
+      }
+      return { images, failed, total: urls.length };
+    },
   });
 }

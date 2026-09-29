@@ -1,11 +1,15 @@
 /**
  * DOM-free helpers for email bodies.
  *
- * The phone never loads anything a sender controls: the document we render
- * carries a `default-src 'none'` CSP (only inline styles and data: images),
- * scripts/frames/forms are stripped, and every `<img>` becomes a small text
- * placeholder. Bodies are rendered inside a WebView (native) or sandboxed
- * iframe (web) with JavaScript disabled.
+ * The phone never talks to a sender's server: the document we render
+ * carries a `default-src 'none'` CSP (only inline styles and data:
+ * images), scripts/frames/forms are stripped, and every `<img>` that was
+ * not deliberately loaded comes back as a small text placeholder. Remote
+ * images are fetched by the app through the deployment's scoped
+ * `get_image` tool (the same SSRF guard and cache behind the web client's
+ * image proxy) and inlined as data: URLs, so the sender only ever sees
+ * Cloudflare's egress. Bodies are rendered inside a WebView (native) or
+ * sandboxed iframe (web) with JavaScript disabled.
  */
 
 /** Escape text for embedding in HTML; used for headers and composed bodies. */
@@ -64,6 +68,28 @@ export function stripHtmlToText(html: string): string {
 }
 
 /**
+ * Convert a body's HTML to flat text for the plain-text view: block
+ * boundaries become newlines, list items get a bullet, tags are dropped
+ * and entities decoded.
+ */
+export function htmlToPlainText(html: string): string {
+	return decodeEntities(
+		html
+			.replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, " ")
+			.replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, " ")
+			.replace(/<br\b[^>]*\/?>/gi, "\n")
+			.replace(/<\/(p|div|li|tr|h[1-6]|blockquote|pre|table|ul|ol|section|article)\s*>/gi, "\n")
+			.replace(/<li\b[^>]*>/gi, "\n• ")
+			.replace(/<[^>]*>/g, " "),
+	)
+		.replace(/[ \t]+\n/g, "\n")
+		.replace(/\n[ \t]+/g, "\n")
+		.replace(/\n{3,}/g, "\n\n")
+		.replace(/[ \t]{2,}/g, " ")
+		.trim();
+}
+
+/**
  * Convert composed plain text to the composer's canonical HTML shape: one
  * pre-wrap div, literal characters, `<br><br>` between paragraphs. This is
  * the shape the worker's verifyDraft keeps verbatim, so paragraph spacing
@@ -78,12 +104,31 @@ export function plainTextToHtml(text: string): string {
   return `<div style="white-space:pre-wrap">${paragraphs.join("<br><br>")}</div>`;
 }
 
+/** Images one message may load; the rest stay text placeholders. */
+export const MAX_BODY_IMAGES = 24;
+
+/**
+ * The remote image URLs of a body, in document order, deduplicated and
+ * absolute-only: relative, data: and cid: sources take the placeholder
+ * path (there is nothing to proxy).
+ */
+export function extractImageUrls(html: string): string[] {
+	const urls = new Set<string>();
+	for (const match of html.matchAll(/<img\b[^>]*>/gi)) {
+		const src = /\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(match[0]);
+		const value = (src?.[1] ?? src?.[2] ?? src?.[3] ?? "").trim();
+		if (/^https?:\/\//i.test(value)) urls.add(value);
+	}
+	return [...urls];
+}
+
 /**
  * Sanitize a body for rendering: no scripts, frames, forms, metas or event
- * handlers; every image becomes a text placeholder (the phone deliberately
- * never fires a sender's tracking pixel).
+ * handlers. An image whose URL is in `images` (loaded through the scoped
+ * get_image tool) renders from its data: URL; every other image becomes a
+ * text placeholder, so the document never references a sender's server.
  */
-export function sanitizeEmailHtml(html: string): string {
+export function sanitizeEmailHtml(html: string, images?: ReadonlyMap<string, string> | null): string {
   let out = html;
   out = out.replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, " ");
   out = out.replace(/<script\b[^>]*\/?>/gi, " ");
@@ -104,6 +149,12 @@ export function sanitizeEmailHtml(html: string): string {
   out = out.replace(/<img\b[^>]*>/gi, (tag) => {
     const alt = /alt\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(tag);
     const label = (alt?.[1] ?? alt?.[2] ?? "").trim();
+    const src = /\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(tag);
+    const url = (src?.[1] ?? src?.[2] ?? src?.[3] ?? "").trim();
+    const inlined = url ? images?.get(url) : undefined;
+    if (inlined) {
+      return `<img src="${escapeHtml(inlined)}" alt="${escapeHtml(label)}">`;
+    }
     return `<span class="ai-image">${escapeHtml(label ? `🖼 ${label}` : "🖼 image")}</span>`;
   });
   // A full document's structural tags are dropped; the content stays.
@@ -151,7 +202,7 @@ header.ai-head h1 { margin: 0 0 8px; font-size: 19px; line-height: 1.35; font-we
 header.ai-head .ai-meta { color: ${palette.secondary}; font-size: 13px; line-height: 1.5; }
 header.ai-head .ai-meta b { color: ${palette.text}; font-weight: 600; }
 main.ai-body { padding: 14px 16px 24px; }
-main.ai-body img { display: none; }
+main.ai-body img { max-width: 100%; height: auto; border-radius: 6px; }
 span.ai-image { display: inline-block; padding: 1px 8px; border-radius: 6px;
   background: ${palette.chip}; color: ${palette.secondary}; font-size: 13px; }
 a { color: ${palette.tint}; }
@@ -172,6 +223,8 @@ export interface EmailDocumentInput {
   /** The message body's HTML (or "" when a body has no HTML form). */
   bodyHtml: string;
   scheme: "light" | "dark";
+  /** Loaded image URLs mapped to their data: URLs (see get_image). */
+  images?: ReadonlyMap<string, string> | null;
 }
 
 /**
@@ -189,7 +242,9 @@ export function buildEmailDocument(input: EmailDocumentInput): string {
   if (input.date) metaRows.push(["Date", input.date]);
   if (input.folderName) metaRows.push(["Folder", input.folderName]);
   const metaHtml = metaRows.map(([label, value]) => `<div><b>${escapeHtml(label)}:</b> ${escapeHtml(value)}</div>`).join("");
-  const body = input.bodyHtml.trim() ? sanitizeEmailHtml(input.bodyHtml) : `<p style="color:${palette.secondary}">(no content)</p>`;
+  const body = input.bodyHtml.trim()
+    ? sanitizeEmailHtml(input.bodyHtml, input.images)
+    : `<p style="color:${palette.secondary}">(no content)</p>`;
   return `<!DOCTYPE html>
 <html>
 <head>

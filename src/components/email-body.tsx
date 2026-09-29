@@ -7,12 +7,13 @@
 import { Linking, StyleSheet } from "react-native";
 import { WebView, type WebViewNavigation } from "react-native-webview";
 
-export function EmailBody({ html }: { html: string }) {
+export function EmailBody({ html, background }: { html: string; background: string }) {
   return (
     <WebView
       originWhitelist={["about:blank"]}
       source={{ html }}
-      style={styles.webview}
+      style={[styles.webview, { backgroundColor: background }]}
+      containerStyle={{ backgroundColor: background }}
       javaScriptEnabled={false}
       domStorageEnabled={false}
       setSupportMultipleWindows={false}
@@ -32,6 +33,5 @@ export function EmailBody({ html }: { html: string }) {
 const styles = StyleSheet.create({
   webview: {
     flex: 1,
-    backgroundColor: "transparent",
   },
 });

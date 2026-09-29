@@ -34,6 +34,10 @@ and keeps it in the device's secure storage.
   scope; unsubscribe needs `send`)
 - Multi-select in any folder list (long-press a message, or the Select button): batch mark read or
   unread, star, move, and delete
+- Message images load through the deployment's `get_image` relay, so photos appear without the
+  phone ever contacting the sender
+- A Formatted / Plain text switch on every message, with an HTML-to-text fallback for messages
+  that carry no text part
 - Opening a message marks it read automatically
 
 ## Getting a key
@@ -54,6 +58,7 @@ npm test                              # vitest: key parsing, API wire shape, HTM
 npm run typecheck                     # tsc --noEmit
 npx expo lint
 npx expo start                        # dev server
+node scripts/make-assets.mjs          # re-render the icon set (icon, adaptive layers, splash, favicon)
 ```
 
 On this host the dev server is reached from the phone over the tailnet:
@@ -80,7 +85,10 @@ build (`npx expo export --platform web`) is used for headless UI checks against 
   localStorage, so use the web build for development only.
 - Message bodies render in a JavaScript-disabled WebView (native) or a fully sandboxed iframe
   (web) under a `default-src 'none'` CSP: scripts never run, frames and forms are stripped, and
-  every image is replaced by its alt text, so a sender's tracking pixel never fires.
+  every image is fetched by the deployment itself (the scoped `get_image` relay, behind the same
+  SSRF guard and cache as the web client's image proxy) and inlined as a `data:` URL, so a
+  sender's server only ever sees Cloudflare's egress, never the phone; an image that cannot be
+  relayed stays a text placeholder.
 - Links open in the system browser, never inside the message view.
 
 ## Provenance

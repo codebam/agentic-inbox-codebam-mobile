@@ -1,6 +1,35 @@
 import { describe, expect, it } from "vitest";
 
-import { buildEmailDocument, plainTextToHtml, sanitizeEmailHtml, stripHtmlToText } from "@/lib/email-html";
+import {
+  buildEmailDocument,
+  extractImageUrls,
+  htmlToPlainText,
+  plainTextToHtml,
+  sanitizeEmailHtml,
+  stripHtmlToText,
+} from "@/lib/email-html";
+
+describe("extractImageUrls", () => {
+  it("collects absolute srcs in order, deduplicated", () => {
+    const html = '<img src="https://a.example/1.png"><img src=\'https://b.example/2.jpg\' alt="x"><img src="https://a.example/1.png">';
+    expect(extractImageUrls(html)).toEqual(["https://a.example/1.png", "https://b.example/2.jpg"]);
+  });
+
+  it("ignores relative, data and cid sources", () => {
+    const html = '<img src="/tracking/pixel.gif"><img src="data:image/png;base64,AAAA"><img src="cid:abc">';
+    expect(extractImageUrls(html)).toEqual([]);
+  });
+});
+
+describe("htmlToPlainText", () => {
+  it("turns block boundaries into newlines and decodes entities", () => {
+    expect(htmlToPlainText("<p>One &amp; two</p><p>Three<br>four</p>")).toBe("One & two\nThree\nfour");
+  });
+
+  it("drops scripts and styles", () => {
+    expect(htmlToPlainText("<style>b{}</style><div>Keep</div><script>x()</script>")).toBe("Keep");
+  });
+});
 
 describe("stripHtmlToText", () => {
   it("strips tags and decodes entities", () => {
@@ -29,6 +58,13 @@ describe("plainTextToHtml", () => {
 });
 
 describe("sanitizeEmailHtml", () => {
+  it("inlines mapped images as data URLs and keeps placeholders for the rest", () => {
+    const html = '<img src="https://a.example/1.png" alt="photo"><img src="https://b.example/track.gif">';
+    const out = sanitizeEmailHtml(html, new Map([["https://a.example/1.png", "data:image/png;base64,AAAA"]]));
+    expect(out).toContain('<img src="data:image/png;base64,AAAA" alt="photo">');
+    expect(out).toContain("🖼 image");
+    expect(out).not.toContain("b.example");
+  });
   it("strips scripts case-insensitively", () => {
     expect(sanitizeEmailHtml('<SCRIPT>alert(1)</SCRIPT><p>ok</p>')).not.toContain("alert");
   });

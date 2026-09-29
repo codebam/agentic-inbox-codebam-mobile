@@ -5,13 +5,13 @@
  * phone renders through email-body.tsx's WebView.
  */
 
-export function EmailBody({ html }: { html: string }) {
+export function EmailBody({ html, background }: { html: string; background: string }) {
   return (
     <iframe
       title="Email body"
       srcDoc={html}
       sandbox=""
-      style={{ border: "none", width: "100%", height: "100%", background: "transparent" }}
+      style={{ border: "none", width: "100%", height: "100%", background }}
     />
   );
 }
