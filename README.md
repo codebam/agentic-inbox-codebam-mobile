@@ -1,56 +1,90 @@
-# Welcome to your Expo app 👋
+# Agentic Inbox Codebam: mobile
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+An Expo (React Native) client for **Agentic Inbox Codebam**, the self-hosted email inbox on
+Cloudflare Workers. Connect it with an access key and read, search, reply, manage drafts and triage mail
+(star, move, delete, snooze, block, unsubscribe) from your phone, in Expo Go or as a
+standalone build.
 
-## Get started
+## What it is
 
-1. Install dependencies
+This is the mobile companion app of the Agentic Inbox Codebam distribution. It talks to a
+deployment's scoped automation API: every call is `POST /api/v1/scoped/<tool>` with a bearer key
+that is either
 
-   ```bash
-   npm install
-   ```
+- a **global key** (`ain2_...`, minted in the deployment's Global Settings, App access tokens),
+  which reaches every mailbox, or
+- a **scoped key** (`ain1_...`, minted in a mailbox's Settings, Access tokens), which reaches one
+  mailbox.
 
-2. Start the app
+The app detects the key kind from its shape, validates it against the server before storing it,
+and keeps it in the device's secure storage.
 
-   ```bash
-   npx expo start
-   ```
+## Features
 
-In the output, you'll find options to open the app in a
+- Mailbox picker (global key) or straight into the bound mailbox (scoped key)
+- Folder browsing: Inbox, Sent, Drafts, Archive, Snoozed, Spam, Trash, with paging and pull to refresh
+- Full-text search within a mailbox, or across every mailbox with a global key
+- Message view: sanitized HTML rendering (no scripts, no remote images, locked by CSP), a plain
+  text toggle, thread view, attachment metadata and text previews
+- Reply and compose with an explicit confirmation before anything is sent, or save as a draft
+- Draft editing and discarding
+- Triage from the message view: star, read/unread, move between folders, snooze (with a wake
+  action on snoozed mail), delete (Trash-aware, with a permanent delete from Trash), block or
+  allow the sender, and one-click unsubscribe when the sender offers it (needs the `manage`
+  scope; unsubscribe needs `send`)
+- Opening a message marks it read automatically
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
+## Getting a key
 
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
+In the inbox web UI:
 
-## Get a fresh project
+1. **Global key**: Global Settings, then App access tokens, and mint a key with the scopes you need
+   (`read`, `draft`, `send`, `manage`; `manage` unlocks the triage actions).
+2. **Scoped key**: open a mailbox, Settings, then Access tokens.
 
-When you're ready, run:
+The key is shown once at mint. Paste it into the app's Connect screen.
 
-```bash
-npm run reset-project
+## Development
+
+```sh
+npm install
+npm test                              # vitest: key parsing, API wire shape, HTML sanitizing, formatting
+npm run typecheck                     # tsc --noEmit
+npx expo lint
+npx expo start                        # dev server
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+On this host the dev server is reached from the phone over the tailnet:
 
-### Other setup steps
+```sh
+EXPO_PACKAGER_HOSTNAME=100.101.46.50 npx expo start --port 8082
+```
 
-- To set up ESLint for linting, run `npx expo lint`, or follow our guide on ["Using ESLint and Prettier"](https://docs.expo.dev/guides/using-eslint/)
-- If you'd like to set up unit testing, follow our guide on ["Unit Testing with Jest"](https://docs.expo.dev/develop/unit-testing/)
-- Learn more about the TypeScript setup in this template in our guide on ["Using TypeScript"](https://docs.expo.dev/guides/typescript/)
+Then open Expo Go on the phone and load `exp://100.101.46.50:8082` (or scan the QR code). A web
+build (`npx expo export --platform web`) is used for headless UI checks against a real deployment.
 
-## Learn more
+### Layout
 
-To learn more about developing your project with Expo, look at the following resources:
+- `src/app/`: expo-router routes (connect, mailboxes, folders, folder list, message, thread,
+  search, compose, settings)
+- `src/lib/`: `token.ts` (key parsing), `api.ts` (the scoped API client and its wire-shape rules),
+  `queries.ts` (React Query hooks), `email-html.ts` (body sanitizing and message documents),
+  `session.tsx`, `storage.ts`
+- `src/components/`: shared UI pieces
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+## Security notes
 
-## Join the community
+- The key lives in the platform secure store (`expo-secure-store`); on web builds it falls back to
+  localStorage, so use the web build for development only.
+- Message bodies render in a JavaScript-disabled WebView (native) or a fully sandboxed iframe
+  (web) under a `default-src 'none'` CSP: scripts never run, frames and forms are stripped, and
+  every image is replaced by its alt text, so a sender's tracking pixel never fires.
+- Links open in the system browser, never inside the message view.
 
-Join our community of developers creating universal apps.
+## Provenance
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+Agentic Inbox Codebam is a modified fork of
+[cloudflare/agentic-inbox](https://github.com/cloudflare/agentic-inbox) (Apache-2.0). This app is
+part of that distribution; it is not a component of the upstream project and is not affiliated
+with, endorsed by, or sponsored by Cloudflare, Inc. The project starter is Expo's create-expo-app
+template (MIT, see LICENSE).

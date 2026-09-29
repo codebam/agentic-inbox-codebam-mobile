@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "agentic-inbox-mobile",
-    "slug": "agentic-inbox-mobile",
+    "name": "Agentic Inbox Codebam",
+    "slug": "agentic-inbox-codebam",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "agenticinboxmobile",
+    "scheme": "agenticinbox",
     "userInterfaceStyle": "automatic",
     "ios": {
       "icon": "./assets/expo.icon"
@@ -32,7 +32,8 @@
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 76
         }
-      ]
+      ],
+      "expo-secure-store"
     ],
     "experiments": {
       "typedRoutes": true,
