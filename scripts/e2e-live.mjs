@@ -28,6 +28,20 @@ const MAILBOX_URL = `${URL_BASE}/m/${encodeURIComponent(MAILBOX)}`;
 const IS_APP_KEY = KEY.startsWith("ain2_");
 const KIND_LABEL = IS_APP_KEY ? "Global key (every mailbox)" : "Scoped key (one mailbox)";
 const DRAFT_SUBJECT = "Re: Appointment Confirmed";
+// The script's own API base for state checks; the app build carries its own.
+const BASE = process.env.E2E_BASE ?? "https://email.codebam.ca";
+
+/** Call the deployment's scoped surface directly (script-side assertions). */
+async function apiCall(tool, body) {
+  const response = await fetch(`${BASE}/api/v1/scoped/${tool}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${KEY}` },
+    body: JSON.stringify(body),
+  });
+  const json = await response.json().catch(() => null);
+  if (!response.ok) throw new Error(`${tool} answered ${response.status}: ${JSON.stringify(json)}`);
+  return json?.result ?? json;
+}
 
 const staticServer = await startStaticServer(DIST, PORT);
 const harness = await startHarness({ profileSuffix: "live" });
@@ -178,6 +192,52 @@ try {
   await harness.waitGone(DRAFT_SUBJECT, 30000);
   await harness.shot("11-draft-discarded");
   console.log("10. draft discarded");
+
+  // 10b. Multi-select: pick a message in the list, star it through the
+  // selection bar (a live runManageBatch call), confirm the star landed on
+  // the server, put it back, and leave selection mode.
+  await page.goto(`${MAILBOX_URL}/f/inbox`, { waitUntil: "networkidle2" });
+  await harness.waitText("Appointment Confirmed", 30000);
+  const inbox = await apiCall("list_emails", { mailboxId: MAILBOX, folder: "inbox", limit: 20 });
+  const listed = Array.isArray(inbox) ? inbox : (inbox?.emails ?? []);
+  const picked = listed.find((email) => String(email.subject ?? "").includes("Appointment Confirmed"));
+  assert(picked && typeof picked.id === "string", "the inbox carries the Appointment Confirmed message");
+  const wasStarred = picked.starred === true;
+
+  await harness.clickAria("Select");
+  await harness.waitText("0 selected", 20000);
+  await harness.clickText("Appointment Confirmed");
+  await harness.waitText("1 selected", 20000);
+  const batchStar = page.waitForResponse(
+    (r) => r.request().method() === "POST" && r.url().includes("/scoped/star_email"),
+    { timeout: 30000 },
+  );
+  await harness.clickAria("Star");
+  const batchStatus = (await batchStar).status();
+  await harness.shot("11b-multiselect");
+  if (batchStatus === 403) {
+    await harness.waitText("lacks the manage scope", 15000);
+    console.log("10b. batch star refused by this key; the refusal is shown");
+  } else {
+    assert(batchStatus === 200, `batch star answered ${batchStatus}`);
+    await harness.waitText("Starred: 1 of 1 messages.", 20000);
+    const after = await apiCall("get_email", { mailboxId: MAILBOX, emailId: picked.id });
+    assert((after?.email ?? after)?.starred === true, "the batch star landed on the server");
+    await apiCall("star_email", { mailboxId: MAILBOX, emailId: picked.id, starred: wasStarred });
+    console.log("10b. multi-select batch star landed on the live server and was restored");
+  }
+  // A successful batch leaves selection mode on its own; only the refusal
+  // path still shows the confirm bar, so cancel only when it is there.
+  const cancelVisible = await page.evaluate(() =>
+    [...document.querySelectorAll('[aria-label="Cancel selection"]')].some((el) => {
+      const rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    }),
+  );
+  if (cancelVisible) {
+    await harness.clickAria("Cancel selection");
+  }
+  await harness.waitGone("selected", 15000);
 
   // 11. Settings, then disconnect.
   await page.goto(`${URL_BASE}/m`, { waitUntil: "networkidle2" });
