@@ -175,6 +175,13 @@ export interface ManageResult {
   [key: string]: unknown;
 }
 
+/** One batch action; each kind maps to the matching single-manage tool. */
+export type BatchAction =
+  | { kind: "read"; read: boolean }
+  | { kind: "star"; starred: boolean }
+  | { kind: "move"; folderId: string }
+  | { kind: "delete"; permanent: boolean };
+
 export interface ComposeBody {
   to: string;
   subject: string;
@@ -419,4 +426,39 @@ export class ScopedApi {
     this.assertAppKey("search_all_mailboxes");
     return this.call<EmailSummary[]>("search_all_mailboxes", cleanFilters(filters));
   }
+}
+
+/**
+ * Apply one manage action to many messages, one call at a time, so a phone
+ * batch needs no server-side bulk tool. Stops at the first refusal and
+ * names how many messages the action did land on, because a partial batch
+ * is the case worth reporting. `onProgress` reports after each success.
+ */
+export async function runManageBatch(
+  api: ScopedApi,
+  mailboxId: string | null,
+  ids: string[],
+  action: BatchAction,
+  onProgress?: (done: number, total: number) => void,
+): Promise<{ done: number }> {
+  let done = 0;
+  for (const id of ids) {
+    try {
+      if (action.kind === "read") {
+        await api.markEmailRead(mailboxId, id, action.read);
+      } else if (action.kind === "star") {
+        await api.starEmail(mailboxId, id, action.starred);
+      } else if (action.kind === "move") {
+        await api.moveEmail(mailboxId, id, action.folderId);
+      } else {
+        await api.deleteEmail(mailboxId, id, action.permanent);
+      }
+      done += 1;
+      onProgress?.(done, ids.length);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "The action failed.";
+      throw new Error(`Stopped after ${done} of ${ids.length}: ${message}`);
+    }
+  }
+  return { done };
 }

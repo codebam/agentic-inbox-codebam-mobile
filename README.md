@@ -32,6 +32,8 @@ and keeps it in the device's secure storage.
   action on snoozed mail), delete (Trash-aware, with a permanent delete from Trash), block or
   allow the sender, and one-click unsubscribe when the sender offers it (needs the `manage`
   scope; unsubscribe needs `send`)
+- Multi-select in any folder list (long-press a message, or the Select button): batch mark read or
+  unread, star, move, and delete
 - Opening a message marks it read automatically
 
 ## Getting a key

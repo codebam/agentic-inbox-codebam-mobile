@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, createSession, normalizeBaseUrl, ScopedApi, type Session } from "@/lib/api";
+import { ApiError, createSession, normalizeBaseUrl, runManageBatch, ScopedApi, type Session } from "@/lib/api";
 
 const HEX = "636f646562616d40636f646562616d2e6361";
 const SECRET = "d5KRt9vQ2mXbW4zY7pLc1nJh8sA3fG6eU0iR2oT5wZq";
@@ -258,5 +258,48 @@ describe("manage tools", () => {
     const api = new ScopedApi(mailboxSession());
     await expect(api.deleteEmail("someone@else.test", "e1")).rejects.toThrow(/scoped to a single mailbox/);
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("runManageBatch", () => {
+  it("applies one action to many ids, in order, with progress", async () => {
+    stubFetch(() => jsonResponse({ ok: true, result: { status: "updated" } }));
+    const api = new ScopedApi(mailboxSession());
+    const seen: string[] = [];
+    const result = await runManageBatch(api, MAILBOX_ID, ["a", "b", "c"], { kind: "read", read: true }, (done, total) => {
+      seen.push(`${done}/${total}`);
+    });
+    expect(result.done).toBe(3);
+    expect(seen).toEqual(["1/3", "2/3", "3/3"]);
+    expect(calls.map((call) => call.url)).toEqual([
+      `${BASE}/api/v1/scoped/mark_email_read`,
+      `${BASE}/api/v1/scoped/mark_email_read`,
+      `${BASE}/api/v1/scoped/mark_email_read`,
+    ]);
+    expect(JSON.parse(String(calls[1]?.init.body))).toMatchObject({ emailId: "b", read: true });
+  });
+
+  it("stops at the first refusal and names how many landed", async () => {
+    let n = 0;
+    stubFetch(() => {
+      n += 1;
+      return n === 2 ? jsonResponse({ error: "This token lacks the manage scope" }, 403) : jsonResponse({ ok: true, result: {} });
+    });
+    const api = new ScopedApi(mailboxSession());
+    await expect(runManageBatch(api, MAILBOX_ID, ["a", "b", "c"], { kind: "star", starred: true })).rejects.toThrow(
+      "Stopped after 1 of 3: This token lacks the manage scope",
+    );
+    expect(calls).toHaveLength(2);
+  });
+
+  it("moves and deletes through the same loop", async () => {
+    stubFetch(() => jsonResponse({ ok: true, result: {} }));
+    const api = new ScopedApi(mailboxSession());
+    await runManageBatch(api, MAILBOX_ID, ["a"], { kind: "move", folderId: "archive" });
+    expect(calls.at(-1)?.url).toBe(`${BASE}/api/v1/scoped/move_email`);
+    expect(JSON.parse(String(calls.at(-1)?.init.body))).toMatchObject({ emailId: "a", folderId: "archive" });
+    await runManageBatch(api, MAILBOX_ID, ["b"], { kind: "delete", permanent: false });
+    expect(calls.at(-1)?.url).toBe(`${BASE}/api/v1/scoped/delete_email`);
+    expect(JSON.parse(String(calls.at(-1)?.init.body))).toMatchObject({ emailId: "b", permanent: false });
   });
 });

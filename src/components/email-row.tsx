@@ -11,10 +11,17 @@ export function EmailRow({
   email,
   onPress,
   showFolder,
+  selectable,
+  selected,
+  onLongPress,
 }: {
   email: EmailSummary;
   onPress: () => void;
   showFolder?: boolean;
+  /** Selection mode: render the check circle and highlight when picked. */
+  selectable?: boolean;
+  selected?: boolean;
+  onLongPress?: () => void;
 }) {
   const theme = useTheme();
   const preview = truncate(stripHtmlToText(email.snippet ?? ""), 140);
@@ -23,7 +30,18 @@ export function EmailRow({
   return (
     <Pressable
       onPress={onPress}
-      style={({ pressed }) => [styles.row, { backgroundColor: pressed ? theme.backgroundSelected : "transparent" }]}>
+      onLongPress={onLongPress}
+      style={({ pressed }) => [
+        styles.row,
+        { backgroundColor: selected ? theme.backgroundSelected : pressed ? theme.backgroundSelected : "transparent" },
+      ]}>
+      {selectable ? (
+        <Ionicons
+          name={selected ? "checkmark-circle" : "ellipse-outline"}
+          size={22}
+          color={selected ? theme.tint : theme.textSecondary}
+        />
+      ) : null}
       <View style={[styles.avatar, { backgroundColor: theme.backgroundElement }]}>
         <ThemedText type="smallBold">{senderInitial(email.sender)}</ThemedText>
       </View>

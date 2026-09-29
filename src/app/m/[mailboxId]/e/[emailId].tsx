@@ -2,6 +2,7 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 import { Redirect, Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { ActionSheet, type SheetAction } from "@/components/action-sheet";
 import { AttachmentBar } from "@/components/attachment-bar";
@@ -45,6 +46,7 @@ export default function EmailScreen() {
   const { api, session, ready } = useSession();
   const theme = useTheme();
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
   const scheme = colorScheme === "dark" ? "dark" : "light";
 
@@ -335,7 +337,7 @@ export default function EmailScreen() {
             <AttachmentBar api={api} mailboxId={mailbox} attachments={email.attachments} />
           ) : null}
 
-          <View style={[styles.actions, { borderTopColor: theme.border }]}>
+          <View style={[styles.actions, { borderTopColor: theme.border, paddingBottom: Spacing.two + insets.bottom }]}>
             {isDraft ? (
               <>
                 <ActionButton icon="create-outline" label="Edit draft" onPress={() => editDraft(email)} />

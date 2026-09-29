@@ -6,8 +6,10 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 
 import {
+  runManageBatch,
   ScopedApi,
   type AttachmentResult,
+  type BatchAction,
   type DiscardedResult,
   type DraftSavedResult,
   type DraftUpdatedResult,
@@ -250,5 +252,23 @@ export function useUnsubscribeEmail(api: ScopedApi | null, mailboxId: string) {
     mutationFn: async (emailId: string): Promise<ManageResult> =>
       requireApi(api).unsubscribeEmail(mailboxId, emailId),
     onSuccess: () => invalidateMailbox(client, api, mailboxId),
+  });
+}
+
+/**
+ * One manage action over many messages, sequential (see runManageBatch).
+ * Invalidates on settled, not just success: a batch that stopped part-way
+ * changed real messages and the lists must show the truth.
+ */
+export function useManageBatch(api: ScopedApi | null, mailboxId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: {
+      ids: string[];
+      action: BatchAction;
+      onProgress?: (done: number, total: number) => void;
+    }): Promise<{ done: number }> =>
+      runManageBatch(requireApi(api), mailboxId, input.ids, input.action, input.onProgress),
+    onSettled: () => invalidateMailbox(client, api, mailboxId),
   });
 }

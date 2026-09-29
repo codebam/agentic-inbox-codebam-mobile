@@ -1,6 +1,7 @@
 import { Redirect, Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { useState } from "react";
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Banner } from "@/components/banner";
 import { ConfirmDialog } from "@/components/confirm-dialog";
@@ -29,6 +30,7 @@ export default function ComposeScreen() {
   const { api, session, ready } = useSession();
   const theme = useTheme();
   const router = useRouter();
+  const insets = useSafeAreaInsets();
 
   const [to, setTo] = useState(params.to ?? "");
   const [subject, setSubject] = useState(params.subject ?? "");
@@ -181,7 +183,7 @@ export default function ComposeScreen() {
           </View>
         </ScrollView>
 
-        <View style={[styles.actions, { borderTopColor: theme.border }]}>
+        <View style={[styles.actions, { borderTopColor: theme.border, paddingBottom: Spacing.two + insets.bottom }]}>
           {mode === "draft" ? (
             <Pressable
               onPress={performSave}
