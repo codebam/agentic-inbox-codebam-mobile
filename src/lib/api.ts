@@ -8,7 +8,7 @@
  *    `mailboxId` (the surface answers 400 when they do);
  *  - an app key (ain2_) reaches every mailbox: every mailbox-scoped call
  *    MUST carry `mailboxId` (the surface answers 400 when it doesn't), and
- *    only it may call the two all-mailbox reads.
+ *    only it may call the all-mailbox reads.
  *
  * This client encodes that contract so no caller can get it wrong.
  */
@@ -69,6 +69,12 @@ export interface Mailbox {
   email: string;
 }
 
+/** One page of the all-mailbox listing: rows plus the exact deployment total. */
+export interface EmailsResult {
+  emails: EmailSummary[];
+  totalCount: number;
+}
+
 export interface AttachmentInfo {
   id: string;
   filename: string;
@@ -95,7 +101,7 @@ export interface EmailSummary {
   folder_name?: string | null;
   category?: string | null;
   snippet?: string | null;
-  /** Present on search_all_mailboxes rows: the mailbox the message came from. */
+  /** Present on the all-mailbox rows: the mailbox the message came from. */
   mailboxId?: string;
 }
 
@@ -697,7 +703,26 @@ export class ScopedApi {
 
   async searchAllMailboxes(filters: SearchFilters): Promise<EmailSummary[]> {
     this.assertAppKey("search_all_mailboxes");
-    return this.call<EmailSummary[]>("search_all_mailboxes", cleanFilters(filters));
+    const result = await this.call<EmailsResult>("search_all_mailboxes", cleanFilters(filters));
+    return result.emails;
+  }
+
+  /**
+   * Every mailbox's mail merged by date (newest first) — the All Accounts
+   * listing. A folder applies to every mailbox; null (or "all") merges
+   * every folder. Each row carries `mailboxId`.
+   */
+  async listAllEmails(
+    folder: string | null,
+    options: { page?: number; limit?: number } = {},
+  ): Promise<EmailsResult> {
+    this.assertAppKey("list_all_emails");
+    const args: Record<string, unknown> = {
+      page: options.page ?? 1,
+      limit: options.limit ?? 25,
+    };
+    if (folder && folder !== "all") args.folder = folder;
+    return this.call<EmailsResult>("list_all_emails", args);
   }
 }
 

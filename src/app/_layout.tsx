@@ -48,6 +48,7 @@ export default function RootLayout() {
             <Stack.Screen name="m/[mailboxId]/f/[folder]" options={{ title: "Messages" }} />
             <Stack.Screen name="m/[mailboxId]/e/[emailId]" options={{ title: "Message" }} />
             <Stack.Screen name="m/[mailboxId]/t/[threadId]" options={{ title: "Thread" }} />
+            <Stack.Screen name="all" options={{ title: "All Accounts" }} />
             <Stack.Screen name="search" options={{ title: "Search" }} />
             <Stack.Screen name="compose" options={{ title: "Compose" }} />
             <Stack.Screen name="settings" options={{ title: "Settings" }} />

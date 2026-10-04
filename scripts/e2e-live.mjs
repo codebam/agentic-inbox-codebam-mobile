@@ -357,6 +357,33 @@ try {
   await harness.shot("19-label-sheet");
   console.log("10j. message More-sheet carries the Labels action and the label sheet opens");
 
+  // 10k. All Accounts view: the merged listing, and its screen.
+  if (IS_APP_KEY) {
+    const merged = await apiCall("list_all_emails", { folder: "inbox", limit: 5 });
+    assert(Array.isArray(merged?.emails), "list_all_emails answers a merged page");
+    assert(
+      typeof merged.totalCount === "number" && merged.totalCount >= 1,
+      "list_all_emails counts every mailbox's inbox",
+    );
+    assert(
+      merged.emails.length >= 1 && merged.emails.every((row) => typeof row.mailboxId === "string"),
+      "every merged row carries its mailbox",
+    );
+
+    await page.goto(`${URL_BASE}/all`, { waitUntil: "networkidle2" });
+    await harness.waitText("All Accounts", 30000);
+    await harness.waitText("All Mail", 20000);
+    await harness.clickText("Inbox");
+    const firstSubject = merged.emails[0]?.subject;
+    if (typeof firstSubject === "string" && firstSubject) {
+      await harness.waitText(firstSubject, 30000);
+    }
+    await harness.shot("20-all-accounts");
+    console.log("10k. All Accounts view merges every mailbox");
+  } else {
+    console.log("10k. All Accounts leg skipped (the merged listing needs a global key)");
+  }
+
   // 11. Settings, then disconnect.
   await page.goto(`${URL_BASE}/m`, { waitUntil: "networkidle2" });
   await harness.waitText(IS_APP_KEY ? "Mailboxes" : MAILBOX, 20000);

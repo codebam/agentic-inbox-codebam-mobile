@@ -103,6 +103,7 @@ describe("scoped-key wire shape", () => {
     const api = new ScopedApi(mailboxSession());
     await expect(api.listMailboxes()).rejects.toThrow(/Only a global key/);
     await expect(api.searchAllMailboxes({ query: "x" })).rejects.toThrow(/Only a global key/);
+    await expect(api.listAllEmails("inbox")).rejects.toThrow(/Only a global key/);
     expect(calls).toHaveLength(0);
   });
 });
@@ -131,6 +132,51 @@ describe("global-key wire shape", () => {
     expect(calls[0]?.url).toBe(`${BASE}/api/v1/scoped/list_mailboxes`);
     expect(Object.keys(lastBody())).not.toContain("mailboxId");
     expect(mailboxes).toEqual([{ id: MAILBOX_ID, email: MAILBOX_ID }]);
+  });
+
+  it("unwraps the merged page from the all-mailbox reads", async () => {
+    stubFetch(() =>
+      jsonResponse({
+        ok: true,
+        result: {
+          emails: [
+            {
+              id: "m1",
+              subject: "Subject m1",
+              date: "2026-01-01T00:00:00.000Z",
+              read: true,
+              starred: false,
+              folder_id: "inbox",
+              mailboxId: MAILBOX_ID,
+            },
+          ],
+          totalCount: 1,
+        },
+      }),
+    );
+    const api = new ScopedApi(appSession());
+    const page = await api.listAllEmails(null, { limit: 25 });
+    expect(calls[0]?.url).toBe(`${BASE}/api/v1/scoped/list_all_emails`);
+    expect(Object.keys(lastBody())).not.toContain("mailboxId");
+    expect(lastBody()).toMatchObject({ page: 1, limit: 25 });
+    expect(page.totalCount).toBe(1);
+    expect(page.emails.map((entry) => entry.id)).toEqual(["m1"]);
+    expect(page.emails[0]?.mailboxId).toBe(MAILBOX_ID);
+
+    // The all-mailbox search answers the same page shape and unwraps too.
+    const searched = await api.searchAllMailboxes({ query: "x" });
+    expect(searched.map((entry) => entry.id)).toEqual(["m1"]);
+  });
+
+  it("applies a folder to every mailbox, and 'all' means every folder", async () => {
+    stubFetch(() => jsonResponse({ ok: true, result: { emails: [], totalCount: 0 } }));
+    const api = new ScopedApi(appSession());
+    await api.listAllEmails("inbox");
+    expect(lastBody()).toMatchObject({ folder: "inbox" });
+    await api.listAllEmails("all");
+    expect(Object.keys(lastBody())).not.toContain("folder");
+    await api.listAllEmails(null);
+    expect(Object.keys(lastBody())).not.toContain("folder");
   });
 });
 

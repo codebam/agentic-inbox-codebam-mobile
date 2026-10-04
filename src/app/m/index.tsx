@@ -48,6 +48,28 @@ export default function MailboxesScreen() {
       ) : null}
       <FlatList
         data={mailboxes.data ?? []}
+        ListHeaderComponent={
+          <Pressable
+            onPress={() => router.push("/all")}
+            style={({ pressed }) => [
+              styles.row,
+              {
+                borderBottomColor: theme.border,
+                backgroundColor: pressed ? theme.backgroundSelected : "transparent",
+              },
+            ]}>
+            <View style={[styles.avatar, { backgroundColor: theme.backgroundElement }]}>
+              <Ionicons name="albums-outline" size={20} color={theme.tint} />
+            </View>
+            <View style={styles.middle}>
+              <ThemedText type="smallBold">All Accounts</ThemedText>
+              <ThemedText type="small" themeColor="textSecondary">
+                Every mailbox in one place
+              </ThemedText>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={theme.textSecondary} />
+          </Pressable>
+        }
         keyExtractor={(item) => item.id}
         renderItem={({ item }) => (
           <Pressable

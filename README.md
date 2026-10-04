@@ -24,6 +24,8 @@ and keeps it in the device's secure storage.
 - Mailbox picker (global key) or straight into the bound mailbox (scoped key)
 - Folder browsing: Inbox, Sent, Drafts, Archive, Snoozed, Spam, Trash, with paging and pull to refresh
 - Full-text search within a mailbox, or across every mailbox with a global key
+- All Accounts view with a global key: every mailbox's mail merged by date,
+  filterable by folder, with each row labelled by its account
 - Message view: sanitized HTML rendering (no scripts, no remote images, locked by CSP), a plain
   text toggle, thread view, attachment metadata and text previews
 - Reply and compose with an explicit confirmation before anything is sent, or save as a draft

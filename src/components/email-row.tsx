@@ -11,6 +11,7 @@ export function EmailRow({
   email,
   onPress,
   showFolder,
+  accountLabel,
   selectable,
   selected,
   onLongPress,
@@ -18,6 +19,8 @@ export function EmailRow({
   email: EmailSummary;
   onPress: () => void;
   showFolder?: boolean;
+  /** All Accounts rows: the account this message belongs to. */
+  accountLabel?: string;
   /** Selection mode: render the check circle and highlight when picked. */
   selectable?: boolean;
   selected?: boolean;
@@ -65,7 +68,11 @@ export function EmailRow({
             {preview}
           </ThemedText>
         ) : null}
-        {showFolder && email.folder_name ? (
+        {accountLabel ? (
+          <ThemedText type="small" numberOfLines={1} style={[styles.folder, { color: theme.tint }]}>
+            {accountLabel}
+          </ThemedText>
+        ) : showFolder && email.folder_name ? (
           <ThemedText type="small" style={[styles.folder, { color: theme.tint }]}>
             {email.folder_name}
             {email.mailboxId ? ` · ${email.mailboxId}` : ""}

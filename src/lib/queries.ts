@@ -19,6 +19,7 @@ import {
   type DraftUpdatedResult,
   type EmailFull,
   type EmailSummary,
+  type EmailsResult,
   type Label,
   type Mailbox,
   type ManageResult,
@@ -64,6 +65,24 @@ export function useMailboxes(api: ScopedApi | null) {
     queryKey: ["mailboxes", ...(api ? sessionScope(api) : ["none"])],
     enabled: Boolean(api) && api?.session.kind === "app",
     queryFn: async (): Promise<Mailbox[]> => requireApi(api).listMailboxes(),
+  });
+}
+
+/**
+ * The All Accounts listing: every mailbox's mail merged by date, newest
+ * first, each row tagged by its mailbox. Only a global key may call it.
+ */
+export function useAllEmails(api: ScopedApi | null, folder: string | null) {
+  return useInfiniteQuery({
+    queryKey: ["all-emails", ...(api ? sessionScope(api) : ["none"]), folder ?? "all"],
+    enabled: Boolean(api) && api?.session.kind === "app",
+    initialPageParam: 1,
+    queryFn: async ({ pageParam }): Promise<EmailsResult> =>
+      requireApi(api).listAllEmails(folder, { page: pageParam, limit: PAGE_SIZE }),
+    getNextPageParam: (lastPage, allPages) =>
+      lastPage.emails.length > 0 && allPages.length * PAGE_SIZE < lastPage.totalCount
+        ? allPages.length + 1
+        : undefined,
   });
 }
 
