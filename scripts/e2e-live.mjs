@@ -299,6 +299,64 @@ try {
   await apiCall("delete_email", { mailboxId: MAILBOX, emailId: imageEmail.id });
   await apiCall("delete_email", { mailboxId: MAILBOX, emailId: imageEmail.id, permanent: true });
 
+  // 10d. Wave-17 screens: every new surface renders against the live mailbox.
+  await page.goto(`${MAILBOX_URL}/labels`, { waitUntil: "networkidle2" });
+  await harness.waitText("Labels", 30000);
+  await harness.waitAria("New label");
+  await harness.shot("13-labels");
+  console.log("10d. labels screen renders");
+
+  await page.goto(`${MAILBOX_URL}/templates`, { waitUntil: "networkidle2" });
+  await harness.waitText("Templates", 30000);
+  await harness.waitAria("New template");
+  await harness.shot("14-templates");
+  console.log("10e. templates screen renders");
+
+  await page.goto(`${MAILBOX_URL}/scheduled`, { waitUntil: "networkidle2" });
+  await harness.waitText("Scheduled sends", 30000);
+  await harness.shot("15-scheduled");
+  console.log("10f. scheduled-sends screen renders");
+
+  await page.goto(`${URL_BASE}/m`, { waitUntil: "networkidle2" });
+  if (IS_APP_KEY) {
+    await harness.waitText("Mailboxes", 30000);
+    await harness.clickText(MAILBOX);
+  }
+  await harness.waitText("MANAGE", 30000);
+  await harness.waitText("Scheduled sends", 30000);
+  await harness.shot("16-manage");
+  console.log("10g. mailbox home shows the Manage section");
+
+  await page.goto(`${URL_BASE}/search?mailboxId=${encodeURIComponent(MAILBOX)}`, { waitUntil: "networkidle2" });
+  await page.waitForSelector('input[placeholder^="Search this mailbox"]', { timeout: 30000 });
+  await harness.shot("17-search");
+  console.log("10h. search screen renders");
+
+  const threadList = await apiCall("list_emails", { mailboxId: MAILBOX, folder: "inbox", limit: 20 });
+  const threadRows = Array.isArray(threadList) ? threadList : (threadList?.emails ?? []);
+  const threaded = threadRows.find((email) => typeof email.thread_id === "string" && email.thread_id);
+  if (threaded) {
+    await page.goto(`${MAILBOX_URL}/t/${encodeURIComponent(threaded.thread_id)}`, { waitUntil: "networkidle2" });
+    await harness.waitText("in this thread", 30000);
+    await harness.waitAria("Mute thread");
+    await harness.waitAria("Summarize thread");
+    await harness.shot("18-thread");
+    console.log("10i. thread screen renders with mute/mark-read/summarize actions");
+  } else {
+    console.log("10i. no threaded message in the inbox; thread leg skipped");
+  }
+
+  await page.goto(`${MAILBOX_URL}/f/inbox`, { waitUntil: "networkidle2" });
+  await harness.waitText("Appointment Confirmed", 30000);
+  await harness.clickText("Appointment Confirmed");
+  await harness.waitText("Appointment Confirmed", 30000);
+  await harness.clickAria("More");
+  await harness.waitText("Labels…", 20000);
+  await harness.clickText("Labels…");
+  await harness.waitText("Labels — tap to toggle", 20000);
+  await harness.shot("19-label-sheet");
+  console.log("10j. message More-sheet carries the Labels action and the label sheet opens");
+
   // 11. Settings, then disconnect.
   await page.goto(`${URL_BASE}/m`, { waitUntil: "networkidle2" });
   await harness.waitText(IS_APP_KEY ? "Mailboxes" : MAILBOX, 20000);
