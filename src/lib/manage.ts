@@ -38,6 +38,22 @@ export function snoozePresets(now: Date): SnoozePreset[] {
 }
 
 /**
+ * The send-later menu for the composer, computed from a caller-supplied
+ * clock (never the render body). Every entry is a future ISO instant — the
+ * schedule_send tool refuses shorthands — so the first preset is computed
+ * rather than reusing snooze's "3h" string.
+ */
+export function sendLaterPresets(now: Date): { label: string; sendAt: string }[] {
+  const morning = (days: number) =>
+    new Date(now.getFullYear(), now.getMonth(), now.getDate() + days, 8, 0, 0, 0).toISOString();
+  return [
+    { label: "In 3 hours", sendAt: new Date(now.getTime() + 3 * 60 * 60 * 1000).toISOString() },
+    { label: "Tomorrow morning", sendAt: morning(1) },
+    { label: "Next week", sendAt: morning(7) },
+  ];
+}
+
+/**
  * The one-click unsubscribe target a stored message advertises, mirroring
  * the server's own condition (an https `<...>` URL plus the RFC 8058
  * one-click marker). Null means the action is not offered; the server still

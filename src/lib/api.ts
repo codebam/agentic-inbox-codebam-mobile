@@ -116,6 +116,8 @@ export interface ThreadResult {
   thread_id: string;
   message_count: number;
   messages: EmailFull[];
+  /** Whether new mail in the thread is skipped by notifications. */
+  muted?: boolean;
 }
 
 /** Result of get_attachment: metadata plus text content or an omission reason. */
@@ -173,6 +175,91 @@ export interface ManageResult {
   status?: string;
   emailId?: string;
   [key: string]: unknown;
+}
+
+/** One stored label: a mailbox-wide tag applied by explicit action. */
+export interface Label {
+  id: string;
+  name: string;
+  color?: string | null;
+  created_at?: string;
+}
+
+export interface LabelListResult {
+  mailboxId: string;
+  labels: Label[];
+  note?: string;
+}
+
+/** Result of add_label / remove_label: the message's labels after the change. */
+export interface LabelUpdateResult {
+  status: string;
+  emailId: string;
+  label: Label;
+  labels: Label[];
+}
+
+/** One stored template: an operator-authored reusable snippet. */
+export interface TemplateRow {
+  id: string;
+  name: string;
+  subject?: string | null;
+  body?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface TemplateListResult {
+  mailboxId: string;
+  templates: TemplateRow[];
+}
+
+/** One stored saved search: a named query re-runnable from the search page. */
+export interface SavedSearchRow {
+  id: string;
+  name: string;
+  query: string;
+  created_at?: string;
+}
+
+/** The stored send parameters of one scheduled send, as far as the app reads them. */
+export interface ScheduledSendPayload {
+  to?: string | string[];
+  subject?: string;
+  from?: string;
+  [key: string]: unknown;
+}
+
+/** One queued outbound message. */
+export interface ScheduledSend {
+  id: string;
+  draft_id: string | null;
+  send_at: string;
+  status: string;
+  payload: ScheduledSendPayload | null;
+  attempts: number;
+  last_error: string | null;
+  created_at: string;
+  sent_at: string | null;
+}
+
+export interface ScheduledSendListResult {
+  mailboxId: string;
+  sends: ScheduledSend[];
+  totalCount: number;
+}
+
+export interface ScheduledSendActionResult {
+  status: string;
+  send: ScheduledSend;
+}
+
+/** A thread summary built on demand; never stored server-side. */
+export interface ThreadSummary {
+  text: string;
+  message_count: number;
+  truncated: boolean;
+  model: string;
 }
 
 /** One batch action; each kind maps to the matching single-manage tool. */
@@ -432,6 +519,175 @@ export class ScopedApi {
     return this.call<SendResult>("send_email", this.mailboxBody(mailboxId, args));
   }
 
+  // ── label tools ──────────────────────────────────────────────────────
+
+  async listLabels(mailboxId: string | null): Promise<LabelListResult> {
+    return this.call<LabelListResult>("list_labels", this.mailboxBody(mailboxId, {}));
+  }
+
+  async createLabel(mailboxId: string | null, input: { name: string; color?: string }): Promise<Label> {
+    const args: Record<string, unknown> = { name: input.name };
+    if (input.color) args.color = input.color;
+    return this.call<Label>("create_label", this.mailboxBody(mailboxId, args));
+  }
+
+  async updateLabel(
+    mailboxId: string | null,
+    input: { label: string; name?: string; color?: string },
+  ): Promise<Label> {
+    const args: Record<string, unknown> = { label: input.label };
+    if (input.name !== undefined) args.name = input.name;
+    if (input.color !== undefined) args.color = input.color;
+    return this.call<Label>("update_label", this.mailboxBody(mailboxId, args));
+  }
+
+  async deleteLabel(mailboxId: string | null, label: string): Promise<{ ok: boolean }> {
+    return this.call<{ ok: boolean }>("delete_label", this.mailboxBody(mailboxId, { label }));
+  }
+
+  async addLabel(mailboxId: string | null, emailId: string, label: string): Promise<LabelUpdateResult> {
+    return this.call<LabelUpdateResult>("add_label", this.mailboxBody(mailboxId, { emailId, label }));
+  }
+
+  async removeLabel(mailboxId: string | null, emailId: string, label: string): Promise<LabelUpdateResult> {
+    return this.call<LabelUpdateResult>("remove_label", this.mailboxBody(mailboxId, { emailId, label }));
+  }
+
+  // ── template tools ───────────────────────────────────────────────────
+
+  async listTemplates(mailboxId: string | null): Promise<TemplateListResult> {
+    return this.call<TemplateListResult>("list_templates", this.mailboxBody(mailboxId, {}));
+  }
+
+  async createTemplate(
+    mailboxId: string | null,
+    input: { name: string; subject?: string; body: string },
+  ): Promise<TemplateRow> {
+    const args: Record<string, unknown> = { name: input.name, body: input.body };
+    if (input.subject) args.subject = input.subject;
+    return this.call<TemplateRow>("create_template", this.mailboxBody(mailboxId, args));
+  }
+
+  async updateTemplate(
+    mailboxId: string | null,
+    input: { templateId: string; name?: string; subject?: string; body?: string },
+  ): Promise<TemplateRow> {
+    const args: Record<string, unknown> = { templateId: input.templateId };
+    if (input.name !== undefined) args.name = input.name;
+    if (input.subject !== undefined) args.subject = input.subject;
+    if (input.body !== undefined) args.body = input.body;
+    return this.call<TemplateRow>("update_template", this.mailboxBody(mailboxId, args));
+  }
+
+  async deleteTemplate(mailboxId: string | null, templateId: string): Promise<{ ok: boolean }> {
+    return this.call<{ ok: boolean }>("delete_template", this.mailboxBody(mailboxId, { templateId }));
+  }
+
+  // ── saved-search tools ───────────────────────────────────────────────
+
+  async listSavedSearches(mailboxId: string | null): Promise<{ searches: SavedSearchRow[] }> {
+    return this.call<{ searches: SavedSearchRow[] }>(
+      "list_saved_searches",
+      this.mailboxBody(mailboxId, {}),
+    );
+  }
+
+  async createSavedSearch(
+    mailboxId: string | null,
+    input: { name: string; query: string },
+  ): Promise<SavedSearchRow> {
+    return this.call<SavedSearchRow>(
+      "create_saved_search",
+      this.mailboxBody(mailboxId, { name: input.name, query: input.query }),
+    );
+  }
+
+  async updateSavedSearch(
+    mailboxId: string | null,
+    input: { searchId: string; name?: string; query?: string },
+  ): Promise<SavedSearchRow> {
+    const args: Record<string, unknown> = { searchId: input.searchId };
+    if (input.name !== undefined) args.name = input.name;
+    if (input.query !== undefined) args.query = input.query;
+    return this.call<SavedSearchRow>("update_saved_search", this.mailboxBody(mailboxId, args));
+  }
+
+  async deleteSavedSearch(mailboxId: string | null, searchId: string): Promise<{ ok: boolean }> {
+    return this.call<{ ok: boolean }>("delete_saved_search", this.mailboxBody(mailboxId, { searchId }));
+  }
+
+  // ── thread tools ─────────────────────────────────────────────────────
+
+  async muteThread(mailboxId: string | null, threadId: string): Promise<{ muted: boolean }> {
+    return this.call<{ muted: boolean }>("mute_thread", this.mailboxBody(mailboxId, { threadId }));
+  }
+
+  async unmuteThread(mailboxId: string | null, threadId: string): Promise<{ muted: boolean }> {
+    return this.call<{ muted: boolean }>("unmute_thread", this.mailboxBody(mailboxId, { threadId }));
+  }
+
+  async markThreadRead(mailboxId: string | null, threadId: string): Promise<ManageResult> {
+    return this.call<ManageResult>("mark_thread_read", this.mailboxBody(mailboxId, { threadId }));
+  }
+
+  async summarizeThread(mailboxId: string | null, threadId: string): Promise<ThreadSummary> {
+    return this.call<ThreadSummary>("summarize_thread", this.mailboxBody(mailboxId, { threadId }));
+  }
+
+  // ── trash tools ──────────────────────────────────────────────────────
+
+  async restoreEmail(mailboxId: string | null, emailId: string): Promise<ManageResult> {
+    return this.call<ManageResult>("restore_email", this.mailboxBody(mailboxId, { emailId }));
+  }
+
+  async emptyTrash(mailboxId: string | null): Promise<{ purged: number }> {
+    return this.call<{ purged: number }>("empty_trash", this.mailboxBody(mailboxId, {}));
+  }
+
+  // ── scheduled-send tools ─────────────────────────────────────────────
+
+  async listScheduledSends(mailboxId: string | null): Promise<ScheduledSendListResult> {
+    return this.call<ScheduledSendListResult>(
+      "list_scheduled_sends",
+      this.mailboxBody(mailboxId, {}),
+    );
+  }
+
+  async scheduleSend(
+    mailboxId: string | null,
+    input: { to: string; subject: string; body: string; sendAt: string; cc?: string; bcc?: string },
+  ): Promise<ScheduledSend> {
+    const args: Record<string, unknown> = {
+      to: input.to,
+      subject: input.subject,
+      bodyHtml: plainTextToHtml(input.body),
+      sendAt: input.sendAt,
+    };
+    if (input.cc) args.cc = input.cc;
+    if (input.bcc) args.bcc = input.bcc;
+    return this.call<ScheduledSend>("schedule_send", this.mailboxBody(mailboxId, args));
+  }
+
+  async cancelScheduledSend(
+    mailboxId: string | null,
+    scheduledSendId: string,
+  ): Promise<ScheduledSendActionResult> {
+    return this.call<ScheduledSendActionResult>(
+      "cancel_scheduled_send",
+      this.mailboxBody(mailboxId, { scheduledSendId }),
+    );
+  }
+
+  async retryScheduledSend(
+    mailboxId: string | null,
+    scheduledSendId: string,
+  ): Promise<ScheduledSendActionResult> {
+    return this.call<ScheduledSendActionResult>(
+      "retry_scheduled_send",
+      this.mailboxBody(mailboxId, { scheduledSendId }),
+    );
+  }
+
   // ── app-only tools (global key) ──────────────────────────────────────
 
   async listMailboxes(): Promise<Mailbox[]> {
@@ -470,6 +726,32 @@ export async function runManageBatch(
       } else {
         await api.deleteEmail(mailboxId, id, action.permanent);
       }
+      done += 1;
+      onProgress?.(done, ids.length);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "The action failed.";
+      throw new Error(`Stopped after ${done} of ${ids.length}: ${message}`);
+    }
+  }
+  return { done };
+}
+
+/**
+ * Restore many trashed messages to the Inbox, one call at a time, mirroring
+ * runManageBatch: stops at the first refusal and names how many messages
+ * were restored, because a partial restore is the case worth reporting.
+ * `onProgress` reports after each success.
+ */
+export async function runRestoreBatch(
+  api: ScopedApi,
+  mailboxId: string | null,
+  ids: string[],
+  onProgress?: (done: number, total: number) => void,
+): Promise<{ done: number }> {
+  let done = 0;
+  for (const id of ids) {
+    try {
+      await api.restoreEmail(mailboxId, id);
       done += 1;
       onProgress?.(done, ids.length);
     } catch (error) {

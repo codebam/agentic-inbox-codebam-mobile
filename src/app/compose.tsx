@@ -1,15 +1,20 @@
+import Ionicons from "@expo/vector-icons/Ionicons";
 import { Redirect, Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { useState } from "react";
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { ActionSheet } from "@/components/action-sheet";
 import { Banner } from "@/components/banner";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { Loading } from "@/components/loading";
 import { ThemedText } from "@/components/themed-text";
 import { Spacing } from "@/constants/theme";
 import { useTheme } from "@/hooks/use-theme";
-import { useCreateDraft, useDraftReply, useSendEmail, useSendReply, useUpdateDraft } from "@/lib/queries";
+import type { TemplateRow } from "@/lib/api";
+import { formatFullDate, truncate } from "@/lib/format";
+import { sendLaterPresets } from "@/lib/manage";
+import { useCreateDraft, useDraftReply, useScheduleSend, useSendEmail, useSendReply, useTemplates, useUpdateDraft } from "@/lib/queries";
 import { useSession } from "@/lib/session";
 
 type ComposeMode = "new" | "reply" | "draft";
@@ -38,16 +43,21 @@ export default function ComposeScreen() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [templateSheet, setTemplateSheet] = useState(false);
+  const [laterSheet, setLaterSheet] = useState<{ label: string; sendAt: string }[] | null>(null);
 
   const sendReply = useSendReply(api, mailboxId);
   const sendEmail = useSendEmail(api, mailboxId);
   const draftReply = useDraftReply(api, mailboxId);
   const createDraft = useCreateDraft(api, mailboxId);
   const updateDraft = useUpdateDraft(api, mailboxId);
+  const scheduleSend = useScheduleSend(api, mailboxId);
+  const templates = useTemplates(api, mailboxId);
 
   const sending = sendReply.isPending || sendEmail.isPending;
+  const scheduling = scheduleSend.isPending;
   const saving = draftReply.isPending || createDraft.isPending || updateDraft.isPending;
-  const busy = sending || saving;
+  const busy = sending || saving || scheduling;
 
   if (!ready) return <Loading />;
   if (!session || !api) return <Redirect href="/connect" />;
@@ -94,6 +104,36 @@ export default function ComposeScreen() {
       return;
     }
     setConfirmOpen(true);
+  };
+
+  const requestSendLater = () => {
+    const problem = validate();
+    if (problem) {
+      setError(problem);
+      return;
+    }
+    setError(null);
+    setLaterSheet(sendLaterPresets(new Date()));
+  };
+
+  const performSchedule = (sendAt: string) => {
+    setLaterSheet(null);
+    setError(null);
+    scheduleSend.mutate(
+      { to: to.trim(), subject: subject.trim(), body, sendAt },
+      {
+        onSuccess: (send) => done(`Scheduled for ${formatFullDate(send.send_at)}.`, 1400),
+        onError: fail,
+      },
+    );
+  };
+
+  const applyTemplate = (template: TemplateRow) => {
+    setTemplateSheet(false);
+    setError(null);
+    if (template.subject) setSubject(template.subject);
+    setBody(template.body ?? "");
+    setSuccess(`Template “${template.name}” applied.`);
   };
 
   const performSave = () => {
@@ -181,6 +221,34 @@ export default function ComposeScreen() {
               />
             </View>
           </View>
+
+          <View style={styles.quickRow}>
+            <Pressable
+              onPress={() => {
+                setError(null);
+                setTemplateSheet(true);
+              }}
+              disabled={busy}
+              style={({ pressed }) => [
+                styles.chip,
+                { backgroundColor: theme.backgroundElement, opacity: busy ? 0.5 : pressed ? 0.7 : 1 },
+              ]}>
+              <Ionicons name="document-text-outline" size={15} color={theme.textSecondary} />
+              <ThemedText type="small">Template</ThemedText>
+            </Pressable>
+            {mode === "new" ? (
+              <Pressable
+                onPress={requestSendLater}
+                disabled={busy}
+                style={({ pressed }) => [
+                  styles.chip,
+                  { backgroundColor: theme.backgroundElement, opacity: busy ? 0.5 : pressed ? 0.7 : 1 },
+                ]}>
+                <Ionicons name="time-outline" size={15} color={theme.textSecondary} />
+                <ThemedText type="small">{scheduling ? "Scheduling…" : "Send later"}</ThemedText>
+              </Pressable>
+            ) : null}
+          </View>
         </ScrollView>
 
         <View style={[styles.actions, { borderTopColor: theme.border, paddingBottom: Spacing.two + insets.bottom }]}>
@@ -240,6 +308,39 @@ export default function ComposeScreen() {
           performSend();
         }}
       />
+
+      <ActionSheet
+        visible={templateSheet}
+        title="Insert a template"
+        actions={
+          templates.isLoading
+            ? [{ label: "Loading templates…", onPress: () => setTemplateSheet(false) }]
+            : (templates.data ?? []).length === 0
+              ? [
+                  {
+                    label: "No templates yet — create one under Manage → Templates",
+                    onPress: () => setTemplateSheet(false),
+                  },
+                ]
+              : (templates.data ?? []).map((template) => ({
+                  label: template.subject
+                    ? `${template.name} — ${truncate(template.subject, 28)}`
+                    : template.name,
+                  onPress: () => applyTemplate(template),
+                }))
+        }
+        onCancel={() => setTemplateSheet(false)}
+      />
+
+      <ActionSheet
+        visible={laterSheet !== null}
+        title="Send later"
+        actions={(laterSheet ?? []).map((option) => ({
+          label: option.label,
+          onPress: () => performSchedule(option.sendAt),
+        }))}
+        onCancel={() => setLaterSheet(null)}
+      />
     </View>
   );
 }
@@ -269,6 +370,19 @@ const styles = StyleSheet.create({
   bodyInput: {
     minHeight: 200,
     maxHeight: 420,
+  },
+  quickRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: Spacing.two,
+  },
+  chip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.one,
+    borderRadius: 999,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: 8,
   },
   actions: {
     flexDirection: "row",

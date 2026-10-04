@@ -2,7 +2,7 @@
   "expo": {
     "name": "Agentic Inbox Codebam",
     "slug": "agentic-inbox-codebam",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "agenticinbox",
@@ -18,7 +18,8 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "ca.codebam.agenticinbox"
+      "package": "ca.codebam.agenticinbox",
+      "versionCode": 2
     },
     "web": {
       "output": "static",

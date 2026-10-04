@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, createSession, normalizeBaseUrl, runManageBatch, ScopedApi, type Session } from "@/lib/api";
+import { ApiError, createSession, normalizeBaseUrl, runManageBatch, runRestoreBatch, ScopedApi, type Session } from "@/lib/api";
 
 const HEX = "636f646562616d40636f646562616d2e6361";
 const SECRET = "d5KRt9vQ2mXbW4zY7pLc1nJh8sA3fG6eU0iR2oT5wZq";
@@ -323,5 +323,184 @@ describe("get_image", () => {
     await api.getImage(null, "https://cdn.example.com/b.png");
     const body = JSON.parse(String(calls[0]?.init.body)) as Record<string, unknown>;
     expect(body).not.toHaveProperty("mailboxId");
+  });
+});
+
+describe("label tools", () => {
+  it("keeps every call on the scoped surface, without a mailboxId", async () => {
+    stubFetch(() => jsonResponse({ ok: true, result: { labels: [] } }));
+    const api = new ScopedApi(mailboxSession());
+
+    await api.listLabels(MAILBOX_ID);
+    expect(calls.at(-1)?.url).toBe(`${BASE}/api/v1/scoped/list_labels`);
+    expect(Object.keys(lastBody())).not.toContain("mailboxId");
+
+    await api.createLabel(MAILBOX_ID, { name: "Urgent", color: "#f59e0b" });
+    expect(calls.at(-1)?.url).toBe(`${BASE}/api/v1/scoped/create_label`);
+    expect(lastBody()).toMatchObject({ name: "Urgent", color: "#f59e0b" });
+
+    await api.createLabel(MAILBOX_ID, { name: "Plain" });
+    expect(lastBody()).toMatchObject({ name: "Plain" });
+    expect(Object.keys(lastBody())).not.toContain("color");
+
+    await api.updateLabel(MAILBOX_ID, { label: "Urgent", name: "Very urgent", color: "" });
+    expect(calls.at(-1)?.url).toBe(`${BASE}/api/v1/scoped/update_label`);
+    expect(lastBody()).toMatchObject({ label: "Urgent", name: "Very urgent", color: "" });
+
+    await api.deleteLabel(MAILBOX_ID, "Urgent");
+    expect(lastBody()).toMatchObject({ label: "Urgent" });
+
+    await api.addLabel(MAILBOX_ID, "e1", "Urgent");
+    expect(calls.at(-1)?.url).toBe(`${BASE}/api/v1/scoped/add_label`);
+    expect(lastBody()).toMatchObject({ emailId: "e1", label: "Urgent" });
+
+    await api.removeLabel(MAILBOX_ID, "e1", "Urgent");
+    expect(calls.at(-1)?.url).toBe(`${BASE}/api/v1/scoped/remove_label`);
+    expect(lastBody()).toMatchObject({ emailId: "e1", label: "Urgent" });
+  });
+});
+
+describe("template and saved-search tools", () => {
+  it("posts the template calls", async () => {
+    stubFetch(() => jsonResponse({ ok: true, result: { templates: [] } }));
+    const api = new ScopedApi(mailboxSession());
+
+    await api.listTemplates(MAILBOX_ID);
+    expect(calls.at(-1)?.url).toBe(`${BASE}/api/v1/scoped/list_templates`);
+
+    await api.createTemplate(MAILBOX_ID, { name: "Welcome", subject: "Hi", body: "Hello!" });
+    expect(calls.at(-1)?.url).toBe(`${BASE}/api/v1/scoped/create_template`);
+    expect(lastBody()).toMatchObject({ name: "Welcome", subject: "Hi", body: "Hello!" });
+
+    await api.createTemplate(MAILBOX_ID, { name: "No subject", body: "Body" });
+    expect(Object.keys(lastBody())).not.toContain("subject");
+
+    await api.updateTemplate(MAILBOX_ID, { templateId: "t1", name: "N", subject: "", body: "B" });
+    expect(lastBody()).toMatchObject({ templateId: "t1", subject: "", body: "B" });
+
+    await api.deleteTemplate(MAILBOX_ID, "t1");
+    expect(lastBody()).toMatchObject({ templateId: "t1" });
+  });
+
+  it("posts the saved-search calls", async () => {
+    stubFetch(() => jsonResponse({ ok: true, result: { searches: [] } }));
+    const api = new ScopedApi(mailboxSession());
+
+    await api.listSavedSearches(MAILBOX_ID);
+    expect(calls.at(-1)?.url).toBe(`${BASE}/api/v1/scoped/list_saved_searches`);
+
+    await api.createSavedSearch(MAILBOX_ID, { name: "Unread", query: "is:unread" });
+    expect(calls.at(-1)?.url).toBe(`${BASE}/api/v1/scoped/create_saved_search`);
+    expect(lastBody()).toMatchObject({ name: "Unread", query: "is:unread" });
+
+    await api.updateSavedSearch(MAILBOX_ID, { searchId: "s1", name: "Read", query: "is:read" });
+    expect(lastBody()).toMatchObject({ searchId: "s1", name: "Read", query: "is:read" });
+
+    await api.deleteSavedSearch(MAILBOX_ID, "s1");
+    expect(lastBody()).toMatchObject({ searchId: "s1" });
+  });
+});
+
+describe("thread and trash tools", () => {
+  it("posts the thread actions", async () => {
+    stubFetch(() => jsonResponse({ ok: true, result: { muted: true } }));
+    const api = new ScopedApi(mailboxSession());
+
+    await api.muteThread(MAILBOX_ID, "th1");
+    expect(calls.at(-1)?.url).toBe(`${BASE}/api/v1/scoped/mute_thread`);
+    expect(lastBody()).toMatchObject({ threadId: "th1" });
+
+    await api.unmuteThread(MAILBOX_ID, "th1");
+    expect(calls.at(-1)?.url).toBe(`${BASE}/api/v1/scoped/unmute_thread`);
+
+    await api.markThreadRead(MAILBOX_ID, "th1");
+    expect(calls.at(-1)?.url).toBe(`${BASE}/api/v1/scoped/mark_thread_read`);
+    expect(lastBody()).toMatchObject({ threadId: "th1" });
+
+    await api.summarizeThread(MAILBOX_ID, "th1");
+    expect(calls.at(-1)?.url).toBe(`${BASE}/api/v1/scoped/summarize_thread`);
+  });
+
+  it("posts restore and empty-trash", async () => {
+    stubFetch(() => jsonResponse({ ok: true, result: { status: "restored" } }));
+    const api = new ScopedApi(mailboxSession());
+
+    await api.restoreEmail(MAILBOX_ID, "e1");
+    expect(calls.at(-1)?.url).toBe(`${BASE}/api/v1/scoped/restore_email`);
+    expect(lastBody()).toMatchObject({ emailId: "e1" });
+
+    await api.emptyTrash(MAILBOX_ID);
+    expect(calls.at(-1)?.url).toBe(`${BASE}/api/v1/scoped/empty_trash`);
+    expect(Object.keys(lastBody())).not.toContain("mailboxId");
+  });
+});
+
+describe("scheduled sends", () => {
+  it("converts the body and posts the schedule", async () => {
+    stubFetch(() => jsonResponse({ ok: true, result: { id: "s1", send_at: "2026-10-05T12:00:00.000Z" } }));
+    const api = new ScopedApi(mailboxSession());
+    await api.scheduleSend(MAILBOX_ID, {
+      to: "a@b.test",
+      subject: "Later",
+      body: "see you then",
+      sendAt: "2026-10-05T12:00:00.000Z",
+      cc: "c@d.test",
+    });
+    expect(calls.at(-1)?.url).toBe(`${BASE}/api/v1/scoped/schedule_send`);
+    const body = lastBody();
+    expect(String(body.bodyHtml)).toContain("white-space:pre-wrap");
+    expect(body).toMatchObject({
+      to: "a@b.test",
+      subject: "Later",
+      sendAt: "2026-10-05T12:00:00.000Z",
+      cc: "c@d.test",
+    });
+    expect(Object.keys(body)).not.toContain("bcc");
+  });
+
+  it("lists, cancels and retries by scheduledSendId", async () => {
+    stubFetch(() => jsonResponse({ ok: true, result: { sends: [] } }));
+    const api = new ScopedApi(mailboxSession());
+
+    await api.listScheduledSends(MAILBOX_ID);
+    expect(calls.at(-1)?.url).toBe(`${BASE}/api/v1/scoped/list_scheduled_sends`);
+
+    await api.cancelScheduledSend(MAILBOX_ID, "s1");
+    expect(calls.at(-1)?.url).toBe(`${BASE}/api/v1/scoped/cancel_scheduled_send`);
+    expect(lastBody()).toMatchObject({ scheduledSendId: "s1" });
+
+    await api.retryScheduledSend(MAILBOX_ID, "s1");
+    expect(calls.at(-1)?.url).toBe(`${BASE}/api/v1/scoped/retry_scheduled_send`);
+    expect(lastBody()).toMatchObject({ scheduledSendId: "s1" });
+  });
+});
+
+describe("runRestoreBatch", () => {
+  it("restores many ids, in order, with progress", async () => {
+    stubFetch(() => jsonResponse({ ok: true, result: { status: "restored" } }));
+    const api = new ScopedApi(mailboxSession());
+    const seen: string[] = [];
+    const result = await runRestoreBatch(api, MAILBOX_ID, ["a", "b"], (done, total) => {
+      seen.push(`${done}/${total}`);
+    });
+    expect(result.done).toBe(2);
+    expect(seen).toEqual(["1/2", "2/2"]);
+    expect(calls.map((call) => call.url)).toEqual([
+      `${BASE}/api/v1/scoped/restore_email`,
+      `${BASE}/api/v1/scoped/restore_email`,
+    ]);
+  });
+
+  it("stops at the first refusal and names how many landed", async () => {
+    let n = 0;
+    stubFetch(() => {
+      n += 1;
+      return n === 2 ? jsonResponse({ error: "Not in the Trash" }, 400) : jsonResponse({ ok: true, result: {} });
+    });
+    const api = new ScopedApi(mailboxSession());
+    await expect(runRestoreBatch(api, MAILBOX_ID, ["a", "b", "c"])).rejects.toThrow(
+      "Stopped after 1 of 3: Not in the Trash",
+    );
+    expect(calls).toHaveLength(2);
   });
 });

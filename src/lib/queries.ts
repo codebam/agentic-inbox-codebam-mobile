@@ -10,6 +10,7 @@ import { extractImageUrls, MAX_BODY_IMAGES } from "./email-html";
 
 import {
   runManageBatch,
+  runRestoreBatch,
   ScopedApi,
   type AttachmentResult,
   type BatchAction,
@@ -18,11 +19,16 @@ import {
   type DraftUpdatedResult,
   type EmailFull,
   type EmailSummary,
+  type Label,
   type Mailbox,
   type ManageResult,
+  type SavedSearchRow,
+  type ScheduledSend,
   type SearchFilters,
   type SendResult,
+  type TemplateRow,
   type ThreadResult,
+  type ThreadSummary,
 } from "./api";
 
 export const PAGE_SIZE = 25;
@@ -273,6 +279,246 @@ export function useManageBatch(api: ScopedApi | null, mailboxId: string) {
     }): Promise<{ done: number }> =>
       runManageBatch(requireApi(api), mailboxId, input.ids, input.action, input.onProgress),
     onSettled: () => invalidateMailbox(client, api, mailboxId),
+  });
+}
+
+// ── labels ───────────────────────────────────────────────────────────
+
+export function useLabels(api: ScopedApi | null, mailboxId: string, enabled = true) {
+  return useQuery({
+    queryKey: ["labels", ...(api ? sessionScope(api) : ["none"]), mailboxId],
+    enabled: Boolean(api) && Boolean(mailboxId) && enabled,
+    queryFn: async (): Promise<Label[]> => (await requireApi(api).listLabels(mailboxId)).labels,
+  });
+}
+
+export function useCreateLabel(api: ScopedApi | null, mailboxId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { name: string; color?: string }): Promise<Label> =>
+      requireApi(api).createLabel(mailboxId, input),
+    onSuccess: () => client.invalidateQueries({ queryKey: ["labels"] }),
+  });
+}
+
+export function useUpdateLabel(api: ScopedApi | null, mailboxId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { label: string; name?: string; color?: string }): Promise<Label> =>
+      requireApi(api).updateLabel(mailboxId, input),
+    onSuccess: () => client.invalidateQueries({ queryKey: ["labels"] }),
+  });
+}
+
+export function useDeleteLabel(api: ScopedApi | null, mailboxId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: async (label: string): Promise<{ ok: boolean }> =>
+      requireApi(api).deleteLabel(mailboxId, label),
+    onSuccess: () => client.invalidateQueries({ queryKey: ["labels"] }),
+  });
+}
+
+export function useAddLabel(api: ScopedApi | null, mailboxId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { emailId: string; label: string }) =>
+      requireApi(api).addLabel(mailboxId, input.emailId, input.label),
+    onSuccess: () => invalidateMailbox(client, api, mailboxId),
+  });
+}
+
+export function useRemoveLabel(api: ScopedApi | null, mailboxId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { emailId: string; label: string }) =>
+      requireApi(api).removeLabel(mailboxId, input.emailId, input.label),
+    onSuccess: () => invalidateMailbox(client, api, mailboxId),
+  });
+}
+
+// ── templates ────────────────────────────────────────────────────────
+
+export function useTemplates(api: ScopedApi | null, mailboxId: string, enabled = true) {
+  return useQuery({
+    queryKey: ["templates", ...(api ? sessionScope(api) : ["none"]), mailboxId],
+    enabled: Boolean(api) && Boolean(mailboxId) && enabled,
+    queryFn: async (): Promise<TemplateRow[]> =>
+      (await requireApi(api).listTemplates(mailboxId)).templates,
+  });
+}
+
+export function useCreateTemplate(api: ScopedApi | null, mailboxId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { name: string; subject?: string; body: string }): Promise<TemplateRow> =>
+      requireApi(api).createTemplate(mailboxId, input),
+    onSuccess: () => client.invalidateQueries({ queryKey: ["templates"] }),
+  });
+}
+
+export function useUpdateTemplate(api: ScopedApi | null, mailboxId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: {
+      templateId: string;
+      name?: string;
+      subject?: string;
+      body?: string;
+    }): Promise<TemplateRow> => requireApi(api).updateTemplate(mailboxId, input),
+    onSuccess: () => client.invalidateQueries({ queryKey: ["templates"] }),
+  });
+}
+
+export function useDeleteTemplate(api: ScopedApi | null, mailboxId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: async (templateId: string): Promise<{ ok: boolean }> =>
+      requireApi(api).deleteTemplate(mailboxId, templateId),
+    onSuccess: () => client.invalidateQueries({ queryKey: ["templates"] }),
+  });
+}
+
+// ── saved searches ───────────────────────────────────────────────────
+
+export function useSavedSearches(api: ScopedApi | null, mailboxId: string, enabled = true) {
+  return useQuery({
+    queryKey: ["saved-searches", ...(api ? sessionScope(api) : ["none"]), mailboxId],
+    enabled: Boolean(api) && Boolean(mailboxId) && enabled,
+    queryFn: async (): Promise<SavedSearchRow[]> =>
+      (await requireApi(api).listSavedSearches(mailboxId)).searches,
+  });
+}
+
+export function useCreateSavedSearch(api: ScopedApi | null, mailboxId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { name: string; query: string }): Promise<SavedSearchRow> =>
+      requireApi(api).createSavedSearch(mailboxId, input),
+    onSuccess: () => client.invalidateQueries({ queryKey: ["saved-searches"] }),
+  });
+}
+
+export function useUpdateSavedSearch(api: ScopedApi | null, mailboxId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { searchId: string; name?: string; query?: string }): Promise<SavedSearchRow> =>
+      requireApi(api).updateSavedSearch(mailboxId, input),
+    onSuccess: () => client.invalidateQueries({ queryKey: ["saved-searches"] }),
+  });
+}
+
+export function useDeleteSavedSearch(api: ScopedApi | null, mailboxId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: async (searchId: string): Promise<{ ok: boolean }> =>
+      requireApi(api).deleteSavedSearch(mailboxId, searchId),
+    onSuccess: () => client.invalidateQueries({ queryKey: ["saved-searches"] }),
+  });
+}
+
+// ── thread actions ───────────────────────────────────────────────────
+
+export function useMuteThread(api: ScopedApi | null, mailboxId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { threadId: string; muted: boolean }): Promise<{ muted: boolean }> => {
+      const clientApi = requireApi(api);
+      return input.muted
+        ? clientApi.muteThread(mailboxId, input.threadId)
+        : clientApi.unmuteThread(mailboxId, input.threadId);
+    },
+    onSuccess: () => client.invalidateQueries({ queryKey: ["thread"] }),
+  });
+}
+
+export function useMarkThreadRead(api: ScopedApi | null, mailboxId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: async (threadId: string): Promise<ManageResult> =>
+      requireApi(api).markThreadRead(mailboxId, threadId),
+    onSuccess: () => invalidateMailbox(client, api, mailboxId),
+  });
+}
+
+export function useSummarizeThread(api: ScopedApi | null, mailboxId: string) {
+  return useMutation({
+    mutationFn: async (threadId: string): Promise<ThreadSummary> =>
+      requireApi(api).summarizeThread(mailboxId, threadId),
+  });
+}
+
+// ── trash ────────────────────────────────────────────────────────────
+
+export function useRestoreEmail(api: ScopedApi | null, mailboxId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: async (emailId: string): Promise<ManageResult> =>
+      requireApi(api).restoreEmail(mailboxId, emailId),
+    onSuccess: () => invalidateMailbox(client, api, mailboxId),
+  });
+}
+
+/** Restore many trashed messages, sequential (see runRestoreBatch). */
+export function useRestoreBatch(api: ScopedApi | null, mailboxId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: {
+      ids: string[];
+      onProgress?: (done: number, total: number) => void;
+    }): Promise<{ done: number }> =>
+      runRestoreBatch(requireApi(api), mailboxId, input.ids, input.onProgress),
+    onSettled: () => invalidateMailbox(client, api, mailboxId),
+  });
+}
+
+export function useEmptyTrash(api: ScopedApi | null, mailboxId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: async (): Promise<{ purged: number }> => requireApi(api).emptyTrash(mailboxId),
+    onSuccess: () => invalidateMailbox(client, api, mailboxId),
+  });
+}
+
+// ── scheduled sends ──────────────────────────────────────────────────
+
+export function useScheduledSends(api: ScopedApi | null, mailboxId: string) {
+  return useQuery({
+    queryKey: ["scheduled-sends", ...(api ? sessionScope(api) : ["none"]), mailboxId],
+    enabled: Boolean(api) && Boolean(mailboxId),
+    queryFn: async (): Promise<ScheduledSend[]> =>
+      (await requireApi(api).listScheduledSends(mailboxId)).sends,
+  });
+}
+
+export function useScheduleSend(api: ScopedApi | null, mailboxId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: {
+      to: string;
+      subject: string;
+      body: string;
+      sendAt: string;
+    }): Promise<ScheduledSend> => requireApi(api).scheduleSend(mailboxId, input),
+    onSuccess: () => client.invalidateQueries({ queryKey: ["scheduled-sends"] }),
+  });
+}
+
+export function useCancelScheduledSend(api: ScopedApi | null, mailboxId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: async (scheduledSendId: string) =>
+      requireApi(api).cancelScheduledSend(mailboxId, scheduledSendId),
+    onSuccess: () => client.invalidateQueries({ queryKey: ["scheduled-sends"] }),
+  });
+}
+
+export function useRetryScheduledSend(api: ScopedApi | null, mailboxId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: async (scheduledSendId: string) =>
+      requireApi(api).retryScheduledSend(mailboxId, scheduledSendId),
+    onSuccess: () => client.invalidateQueries({ queryKey: ["scheduled-sends"] }),
   });
 }
 

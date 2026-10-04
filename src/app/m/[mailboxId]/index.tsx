@@ -92,10 +92,61 @@ export default function FoldersScreen() {
             </View>
           ) : null
         }
+        ListFooterComponent={
+          <View style={styles.manageSection}>
+            <ThemedText type="small" themeColor="textSecondary" style={styles.sectionTitle}>
+              Manage
+            </ThemedText>
+            <ManageRow
+              icon="pricetags-outline"
+              label="Labels"
+              onPress={() => router.push({ pathname: "/m/[mailboxId]/labels", params: { mailboxId } })}
+            />
+            <ManageRow
+              icon="document-text-outline"
+              label="Templates"
+              onPress={() => router.push({ pathname: "/m/[mailboxId]/templates", params: { mailboxId } })}
+            />
+            <ManageRow
+              icon="time-outline"
+              label="Scheduled sends"
+              onPress={() => router.push({ pathname: "/m/[mailboxId]/scheduled", params: { mailboxId } })}
+            />
+          </View>
+        }
         ListEmptyComponent={<EmptyState icon="folder-outline" title="No folders" />}
         contentContainerStyle={styles.listContent}
       />
     </View>
+  );
+}
+
+function ManageRow({
+  icon,
+  label,
+  onPress,
+}: {
+  icon: IconName;
+  label: string;
+  onPress: () => void;
+}) {
+  const theme = useTheme();
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.row,
+        {
+          borderBottomColor: theme.border,
+          backgroundColor: pressed ? theme.backgroundSelected : "transparent",
+        },
+      ]}>
+      <Ionicons name={icon} size={22} color={theme.tint} />
+      <ThemedText type="default" style={styles.name}>
+        {label}
+      </ThemedText>
+      <Ionicons name="chevron-forward" size={18} color={theme.textSecondary} />
+    </Pressable>
   );
 }
 
@@ -122,6 +173,15 @@ const styles = StyleSheet.create({
   },
   hint: {
     padding: Spacing.three,
+  },
+  manageSection: {
+    paddingTop: Spacing.four,
+  },
+  sectionTitle: {
+    paddingHorizontal: Spacing.three,
+    paddingBottom: Spacing.one,
+    textTransform: "uppercase",
+    letterSpacing: 1,
   },
   listContent: {
     flexGrow: 1,

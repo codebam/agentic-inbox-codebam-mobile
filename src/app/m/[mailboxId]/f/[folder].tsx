@@ -17,7 +17,7 @@ import { useTheme } from "@/hooks/use-theme";
 import type { BatchAction } from "@/lib/api";
 import { folderDisplayName } from "@/lib/format";
 import { moveTargets } from "@/lib/manage";
-import { useEmails, useManageBatch } from "@/lib/queries";
+import { useEmails, useEmptyTrash, useManageBatch, useRestoreBatch } from "@/lib/queries";
 import { useSession } from "@/lib/session";
 
 type IconName = ComponentProps<typeof Ionicons>["name"];
@@ -40,6 +40,8 @@ export default function FolderScreen() {
   const insets = useSafeAreaInsets();
   const query = useEmails(api, mailboxId ?? "", folder ?? "inbox");
   const batch = useManageBatch(api, mailboxId ?? "");
+  const restoreBatch = useRestoreBatch(api, mailboxId ?? "");
+  const emptyTrash = useEmptyTrash(api, mailboxId ?? "");
 
   // null = normal browsing; a Set (possibly empty) = selection mode.
   const [selection, setSelection] = useState<Set<string> | null>(null);
@@ -48,6 +50,7 @@ export default function FolderScreen() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [sheet, setSheet] = useState<{ title: string; actions: SheetAction[] } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmEmpty, setConfirmEmpty] = useState(false);
 
   if (!ready) return <Loading />;
   if (!session || !api) return <Redirect href="/connect" />;
@@ -103,6 +106,31 @@ export default function FolderScreen() {
     );
   };
 
+  /** Restore the selection to the Inbox, sequentially, with progress. */
+  const runRestore = () => {
+    if (count === 0) return;
+    setActionError(null);
+    setNotice(null);
+    const ids = selectedIds;
+    restoreBatch.mutate(
+      {
+        ids,
+        onProgress: (done, total) => setProgress(`Restoring ${done} of ${total}`),
+      },
+      {
+        onSuccess: (result) => {
+          setProgress(null);
+          setSelection(null);
+          setNotice(`Restored: ${result.done} of ${ids.length} messages.`);
+        },
+        onError: (error) => {
+          setProgress(null);
+          setActionError(error instanceof Error ? error.message : "The restore stopped.");
+        },
+      },
+    );
+  };
+
   const openMove = () => {
     setSheet({
       title: `Move ${count === 1 ? "1 message" : `${count} messages`} to`,
@@ -134,6 +162,13 @@ export default function FolderScreen() {
                 </>
               ) : (
                 <>
+                  {inTrash ? (
+                    <HeaderIconButton
+                      name="trash-bin-outline"
+                      label="Empty trash"
+                      onPress={() => setConfirmEmpty(true)}
+                    />
+                  ) : null}
                   <HeaderIconButton
                     name="checkmark-circle-outline"
                     label="Select"
@@ -260,6 +295,14 @@ export default function FolderScreen() {
             disabled={count === 0 || batch.isPending}
             onPress={openMove}
           />
+          {inTrash ? (
+            <SelectButton
+              icon="arrow-undo-outline"
+              label="Restore"
+              disabled={count === 0 || batch.isPending || restoreBatch.isPending}
+              onPress={runRestore}
+            />
+          ) : null}
           <SelectButton
             icon="trash-outline"
             label="Delete"
@@ -291,6 +334,30 @@ export default function FolderScreen() {
         onConfirm={() => {
           setConfirmDelete(false);
           run(inTrash ? "Deleted" : "Moved to Trash", { kind: "delete", permanent: inTrash });
+        }}
+      />
+
+      <ConfirmDialog
+        visible={confirmEmpty}
+        title="Empty the Trash?"
+        message="This permanently deletes every message in Trash. This cannot be undone."
+        confirmLabel="Empty trash"
+        destructive
+        busy={emptyTrash.isPending}
+        onCancel={() => setConfirmEmpty(false)}
+        onConfirm={() => {
+          setConfirmEmpty(false);
+          emptyTrash.mutate(undefined, {
+            onSuccess: (result) => {
+              setNotice(
+                result.purged === 1
+                  ? "Emptied 1 message from Trash."
+                  : `Emptied ${result.purged} messages from Trash.`,
+              );
+            },
+            onError: (error) =>
+              setActionError(error instanceof Error ? error.message : "Couldn't empty the Trash."),
+          });
         }}
       />
     </View>

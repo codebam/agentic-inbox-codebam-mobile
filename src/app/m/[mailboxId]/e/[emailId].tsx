@@ -14,17 +14,21 @@ import { ThemedText } from "@/components/themed-text";
 import { Spacing } from "@/constants/theme";
 import { useColorScheme } from "@/hooks/use-color-scheme";
 import { useTheme } from "@/hooks/use-theme";
-import { ApiError, type EmailFull } from "@/lib/api";
+import { ApiError, type EmailFull, type Label } from "@/lib/api";
 import { buildEmailDocument, htmlToPlainText, plainTextToHtml } from "@/lib/email-html";
 import { folderDisplayName, formatFullDate, replySubject, senderAddress, senderName, truncate } from "@/lib/format";
 import { moveTargets, oneClickUnsubscribeTarget, snoozePresets } from "@/lib/manage";
 import {
+  useAddLabel,
   useDeleteEmail,
   useDiscardDraft,
   useEmail,
   useEmailImages,
+  useLabels,
   useMarkEmailRead,
   useMoveEmail,
+  useRemoveLabel,
+  useRestoreEmail,
   useSetSenderPolicy,
   useSnoozeEmail,
   useStarEmail,
@@ -60,17 +64,25 @@ export default function EmailScreen() {
   const unsnooze = useUnsnoozeEmail(api, mailbox);
   const senderPolicy = useSetSenderPolicy(api, mailbox);
   const unsubscribe = useUnsubscribeEmail(api, mailbox);
+  const restoreEmail = useRestoreEmail(api, mailbox);
+  const addLabel = useAddLabel(api, mailbox);
+  const removeLabel = useRemoveLabel(api, mailbox);
 
   const [plainText, setPlainText] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmUnsubscribe, setConfirmUnsubscribe] = useState(false);
   const [sheet, setSheet] = useState<{ title: string; actions: SheetAction[] } | null>(null);
+  const [labelSheet, setLabelSheet] = useState(false);
+  const [labelOverride, setLabelOverride] = useState<{ emailId: string; labels: Label[] } | null>(
+    null,
+  );
   const [actionError, setActionError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   const email = emailQuery.data;
   const images = useEmailImages(api, mailbox, email?.body ?? null);
+  const labels = useLabels(api, mailbox, labelSheet);
 
   // Opening a message marks it read, once per message and never for a draft.
   // It is a background convenience: an error here stays quiet and leaves the
@@ -206,6 +218,13 @@ export default function EmailScreen() {
     if (!email) return;
     setActionError(null);
     const actions: SheetAction[] = [];
+    actions.push({
+      label: "Labels…",
+      onPress: () => {
+        setSheet(null);
+        openLabels();
+      },
+    });
     if (oneClickUnsubscribeTarget(email)) {
       actions.push({
         label: "Unsubscribe from this sender",
@@ -233,8 +252,42 @@ export default function EmailScreen() {
     setSheet({ title: "More actions", actions });
   };
 
+  const isLabelAttached = (label: Label): boolean => {
+    if (!labelOverride || !email || labelOverride.emailId !== email.id) return false;
+    return labelOverride.labels.some((entry) => entry.id === label.id);
+  };
+
+  const toggleLabel = (label: Label) => {
+    if (!email) return;
+    setActionError(null);
+    const attached = isLabelAttached(label);
+    const handler = attached ? removeLabel : addLabel;
+    handler.mutate(
+      { emailId: email.id, label: label.name },
+      {
+        onSuccess: (result) => setLabelOverride({ emailId: email.id, labels: result.labels }),
+        onError: fail,
+      },
+    );
+  };
+
+  const restoreNow = () => {
+    if (!email) return;
+    setActionError(null);
+    restoreEmail.mutate(email.id, {
+      onSuccess: () => setNotice("Restored to the Inbox."),
+      onError: fail,
+    });
+  };
+
+  const openLabels = () => {
+    setActionError(null);
+    setLabelSheet(true);
+  };
+
   const isDraft = email?.folder_id === "draft";
   const inTrash = email?.folder_id === "trash";
+  const emailLabels = email && labelOverride?.emailId === email.id ? labelOverride.labels : [];
   const busy =
     markRead.isPending ||
     star.isPending ||
@@ -243,7 +296,10 @@ export default function EmailScreen() {
     snooze.isPending ||
     unsnooze.isPending ||
     senderPolicy.isPending ||
-    unsubscribe.isPending;
+    unsubscribe.isPending ||
+    restoreEmail.isPending ||
+    addLabel.isPending ||
+    removeLabel.isPending;
 
   return (
     <View style={[styles.container, { backgroundColor: theme.background }]}>
@@ -295,7 +351,9 @@ export default function EmailScreen() {
                 onPress={toggleRead}
               />
               <ManageButton icon="file-tray-full-outline" label="Move" onPress={openMove} />
-              {inTrash ? null : email.folder_id === "snoozed" ? (
+              {inTrash ? (
+                <ManageButton icon="arrow-undo-outline" label="Restore" onPress={restoreNow} />
+              ) : email.folder_id === "snoozed" ? (
                 <ManageButton icon="sunny-outline" label="Wake" onPress={wakeNow} />
               ) : (
                 <ManageButton icon="time-outline" label="Snooze" onPress={openSnooze} />
@@ -309,6 +367,26 @@ export default function EmailScreen() {
                 }}
               />
               <ManageButton icon="ellipsis-horizontal" label="More" onPress={openMore} />
+            </View>
+          ) : null}
+
+          {!isDraft && emailLabels.length > 0 ? (
+            <View style={[styles.labelChips, { borderBottomColor: theme.border }]}>
+              {emailLabels.map((label) => (
+                <Pressable
+                  key={label.id}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Remove label ${label.name}`}
+                  onPress={() => toggleLabel(label)}
+                  style={[
+                    styles.labelChip,
+                    { backgroundColor: theme.backgroundElement, borderColor: theme.border },
+                  ]}>
+                  <View style={[styles.labelDot, { backgroundColor: label.color || theme.tint }]} />
+                  <ThemedText type="small">{label.name}</ThemedText>
+                  <Ionicons name="close" size={12} color={theme.textSecondary} />
+                </Pressable>
+              ))}
             </View>
           ) : null}
 
@@ -405,6 +483,35 @@ export default function EmailScreen() {
         title={sheet?.title}
         actions={sheet?.actions ?? []}
         onCancel={() => setSheet(null)}
+      />
+
+      <ActionSheet
+        visible={labelSheet}
+        title="Labels — tap to toggle"
+        actions={
+          labels.isLoading
+            ? [{ label: "Loading labels…", onPress: () => setLabelSheet(false) }]
+            : labels.error
+              ? [
+                  {
+                    label:
+                      labels.error instanceof Error ? labels.error.message : "Couldn't load labels.",
+                    onPress: () => setLabelSheet(false),
+                  },
+                ]
+              : (labels.data ?? []).length === 0
+                ? [
+                    {
+                      label: "No labels yet — create one under Manage → Labels",
+                      onPress: () => setLabelSheet(false),
+                    },
+                  ]
+                : (labels.data ?? []).map((label) => ({
+                    label: `${isLabelAttached(label) ? "✓ " : ""}${label.name}`,
+                    onPress: () => toggleLabel(label),
+                  }))
+        }
+        onCancel={() => setLabelSheet(false)}
       />
 
       <ConfirmDialog
@@ -592,6 +699,28 @@ const styles = StyleSheet.create({
   },
   viewSwitchActive: {
     color: "#ffffff",
+  },
+  labelChips: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: Spacing.one,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.two,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  labelChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.one,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: Spacing.two,
+    paddingVertical: 4,
+  },
+  labelDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
   },
   imageNote: {
     paddingHorizontal: Spacing.three,
