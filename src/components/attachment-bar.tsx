@@ -98,17 +98,17 @@ function AttachmentCard({
           {query.error instanceof Error ? query.error.message : "Couldn't load this attachment."}
         </ThemedText>
       ) : null}
-      {query.data?.content.kind === "text" ? (
+      {query.data && query.data.content !== null ? (
         <ScrollView style={styles.cardBody} contentContainerStyle={styles.cardBodyContent}>
           <ThemedText type="code" selectable>
-            {query.data.content.text}
-            {query.data.content.truncated ? "\n\n[truncated]" : ""}
+            {query.data.content}
+            {query.data.truncated ? "\n\n[truncated]" : ""}
           </ThemedText>
         </ScrollView>
       ) : null}
-      {query.data?.content.kind === "omitted" ? (
+      {query.data && query.data.content === null ? (
         <ThemedText type="small" themeColor="textSecondary" style={styles.cardBody}>
-          {query.data.content.reason}
+          {query.data.omitted ?? "This attachment's content is not previewable."}
         </ThemedText>
       ) : null}
     </View>

@@ -82,11 +82,11 @@ export default function MailboxesScreen() {
               },
             ]}>
             <View style={[styles.avatar, { backgroundColor: theme.backgroundElement }]}>
-              <ThemedText type="smallBold">{item.email.charAt(0).toUpperCase()}</ThemedText>
+              <ThemedText type="smallBold">{item.address.charAt(0).toUpperCase()}</ThemedText>
             </View>
             <View style={styles.middle}>
-              <ThemedText type="smallBold">{item.email}</ThemedText>
-              {item.id !== item.email ? (
+              <ThemedText type="smallBold">{item.address}</ThemedText>
+              {item.id !== item.address ? (
                 <ThemedText type="small" themeColor="textSecondary">
                   {item.id}
                 </ThemedText>

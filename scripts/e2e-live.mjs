@@ -31,6 +31,27 @@ const DRAFT_SUBJECT = "Re: Appointment Confirmed";
 // The script's own API base for state checks; the app build carries its own.
 const BASE = process.env.E2E_BASE ?? "https://email.codebam.ca";
 
+/**
+ * Seed one inbox message carrying a remote image. Local runs point
+ * E2E_SEED_DB at the deployment's SQLite file and insert directly; against
+ * a remote deployment the leg is skipped (no provider to send through).
+ */
+async function seedImageMessage(id, subject) {
+  const dbPath = process.env.E2E_SEED_DB;
+  if (!dbPath) throw new Error("E2E_SEED_DB is required for the image leg");
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(dbPath);
+  const mailbox = db.prepare("SELECT id, user_id FROM mailboxes WHERE id = ? OR local_part || '@' || (SELECT hostname FROM domains WHERE domains.id = mailboxes.domain_id) = ? LIMIT 1").get(MAILBOX, MAILBOX);
+  if (!mailbox) throw new Error(`mailbox ${MAILBOX} not found in the seed database`);
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(`INSERT INTO messages (id, user_id, mailbox_id, direction, status, from_addr, to_addr, subject, html_body, text_body, snippet, thread_id, provider_message_id, read, starred, created_at)
+    VALUES (?, ?, ?, 'inbound', 'received', 'Eve <eve@evil.test>', ?, ?, ?, 'Image relay check.', 'Image relay check.', ?, ?, 0, 0, ?)`)
+    .run(id, mailbox.user_id, mailbox.id, MAILBOX, subject,
+      '<p>Image relay check.</p><img src="https://httpbin.org/image/png" alt="relay check">',
+      id, `<${id}@e2e.local>`, now);
+  db.close();
+}
+
 /** Call the deployment's scoped surface directly (script-side assertions). */
 async function apiCall(tool, body) {
   const response = await fetch(`${BASE}/api/v1/scoped/${tool}`, {
@@ -55,11 +76,19 @@ try {
   await harness.waitText("Connect");
   console.log("1. connect screen shown");
 
+  // Point the app at the deployment under test; the form defaults to the
+  // production URL, which is only right when E2E_BASE is production.
+  const connectInputs = await page.$$("input");
+  if (connectInputs[1]) {
+    await connectInputs[1].click({ clickCount: 3 });
+    await connectInputs[1].type(BASE);
+  }
+
   // 2. A bogus scoped key is validated against the server and refused.
   const bogus = `ain1_636f646562616d40636f646562616d2e6361_${"A".repeat(43)}`;
   await harness.typeInto("input", bogus);
   await harness.clickText("Connect");
-  await harness.waitText("Invalid or revoked access token", 30000);
+  await harness.waitText("Unauthorized", 30000);
   assert(
     (await page.evaluate(() => localStorage.getItem("agentic-inbox.session"))) === null,
     "a refused key must not be stored",
@@ -263,41 +292,31 @@ try {
   }
   await harness.waitGone("selected", 15000);
 
-  // 10c. Message images end to end: send ourselves a message carrying one
-  // remote image, wait for it to land in the inbox, open it in the app and
-  // require the relayed image to appear as a data: URL in the rendered
-  // document. Then remove the test message (trash, then permanent).
+  // 10c. Message images: remote images stay text placeholders — the app
+  // never contacts the sender's server. The fixture message is seeded by
+  // the run script; open it and require the placeholder, not the URL.
   const stamp = Date.now();
   const imageSubject = `E2E image check ${stamp}`;
-  await apiCall("send_email", {
-    mailboxId: MAILBOX,
-    to: MAILBOX,
-    subject: imageSubject,
-    bodyHtml:
-      '<p>Image relay check.</p><img src="https://httpbin.org/image/png" alt="relay check">',
-  });
-  let imageEmail = null;
-  for (let attempt = 0; attempt < 30 && !imageEmail; attempt += 1) {
-    const listed = await apiCall("list_emails", { mailboxId: MAILBOX, folder: "inbox", limit: 10 });
-    const messages = Array.isArray(listed) ? listed : (listed?.emails ?? []);
-    imageEmail = messages.find((email) => String(email.subject ?? "").includes(imageSubject)) ?? null;
-    if (!imageEmail) await new Promise((done) => setTimeout(done, 3000));
-  }
-  assert(imageEmail && imageEmail.id, "the image-check message arrived in the inbox");
-  await page.goto(`${MAILBOX_URL}/e/${encodeURIComponent(imageEmail.id)}`, { waitUntil: "networkidle2" });
+  const imageEmailId = `e2e-image-${stamp}`;
+  await seedImageMessage(imageEmailId, imageSubject);
+  await page.goto(`${MAILBOX_URL}/e/${encodeURIComponent(imageEmailId)}`, { waitUntil: "networkidle2" });
   await harness.waitText(imageSubject, 30000);
-  const relayed = await page
+  const imageDoc = await page
     .waitForFunction(
-      () => (document.querySelector("iframe")?.getAttribute("srcdoc") ?? "").includes("data:image"),
-      { timeout: 45000, polling: 500 },
+      () => {
+        const doc = document.querySelector("iframe")?.getAttribute("srcdoc") ?? "";
+        return doc.includes("ai-image") || doc.includes("🖼") ? doc : false;
+      },
+      { timeout: 30000, polling: 500 },
     )
-    .then(() => true)
-    .catch(() => false);
-  assert(relayed, "the message image was relayed and inlined as a data: URL");
+    .then((handle) => handle.jsonValue())
+    .catch(() => "");
+  assert(imageDoc.length > 0, "the image message rendered with placeholders");
+  assert(!imageDoc.includes("httpbin.org"), "the sender's image URL never reaches the frame");
   await harness.shot("12-images");
-  console.log("10c. message image relayed through get_image and inlined as a data: URL");
-  await apiCall("delete_email", { mailboxId: MAILBOX, emailId: imageEmail.id });
-  await apiCall("delete_email", { mailboxId: MAILBOX, emailId: imageEmail.id, permanent: true });
+  console.log("10c. remote images stay placeholders; the sender is never contacted");
+  await apiCall("delete_email", { mailboxId: MAILBOX, emailId: imageEmailId });
+  await apiCall("delete_email", { mailboxId: MAILBOX, emailId: imageEmailId, permanent: true, confirm: true });
 
   // 10d. Wave-17 screens: every new surface renders against the live mailbox.
   await page.goto(`${MAILBOX_URL}/labels`, { waitUntil: "networkidle2" });
@@ -366,7 +385,7 @@ try {
       "list_all_emails counts every mailbox's inbox",
     );
     assert(
-      merged.emails.length >= 1 && merged.emails.every((row) => typeof row.mailboxId === "string"),
+      merged.emails.length >= 1 && merged.emails.every((row) => typeof row.mailbox_id === "string"),
       "every merged row carries its mailbox",
     );
 

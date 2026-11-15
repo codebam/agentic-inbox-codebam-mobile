@@ -78,7 +78,7 @@ describe("createSession / normalizeBaseUrl", () => {
 
 describe("scoped-key wire shape", () => {
   it("never sends a mailboxId, and sends the bearer key", async () => {
-    stubFetch(() => jsonResponse({ ok: true, result: [] }));
+    stubFetch(() => jsonResponse([]));
     const api = new ScopedApi(mailboxSession());
     await api.listEmails(MAILBOX_ID, "inbox", { limit: 5, page: 2 });
 
@@ -92,14 +92,14 @@ describe("scoped-key wire shape", () => {
   });
 
   it("refuses to use the key against another mailbox before any request", async () => {
-    stubFetch(() => jsonResponse({ ok: true, result: [] }));
+    stubFetch(() => jsonResponse([]));
     const api = new ScopedApi(mailboxSession());
     await expect(api.listEmails("someone@else.test", "inbox")).rejects.toThrow(/scoped to a single mailbox/);
     expect(calls).toHaveLength(0);
   });
 
   it("refuses the app-only tools", async () => {
-    stubFetch(() => jsonResponse({ ok: true, result: [] }));
+    stubFetch(() => jsonResponse([]));
     const api = new ScopedApi(mailboxSession());
     await expect(api.listMailboxes()).rejects.toThrow(/Only a global key/);
     await expect(api.searchAllMailboxes({ query: "x" })).rejects.toThrow(/Only a global key/);
@@ -110,7 +110,7 @@ describe("scoped-key wire shape", () => {
 
 describe("global-key wire shape", () => {
   it("names the mailbox on every mailbox-scoped call", async () => {
-    stubFetch(() => jsonResponse({ ok: true, result: [] }));
+    stubFetch(() => jsonResponse([]));
     const api = new ScopedApi(appSession());
     await api.listEmails(MAILBOX_ID, "draft", {});
 
@@ -119,39 +119,36 @@ describe("global-key wire shape", () => {
   });
 
   it("refuses a mailbox-scoped call that names no mailbox", async () => {
-    stubFetch(() => jsonResponse({ ok: true, result: [] }));
+    stubFetch(() => jsonResponse([]));
     const api = new ScopedApi(appSession());
     await expect(api.getEmail(null, "abc")).rejects.toThrow(/reaches every mailbox/);
     expect(calls).toHaveLength(0);
   });
 
   it("calls the all-mailbox reads without a mailboxId", async () => {
-    stubFetch(() => jsonResponse({ ok: true, result: [{ id: MAILBOX_ID, email: MAILBOX_ID }] }));
+    stubFetch(() => jsonResponse([{ id: MAILBOX_ID, address: MAILBOX_ID }]));
     const api = new ScopedApi(appSession());
     const mailboxes = await api.listMailboxes();
     expect(calls[0]?.url).toBe(`${BASE}/api/v1/scoped/list_mailboxes`);
     expect(Object.keys(lastBody())).not.toContain("mailboxId");
-    expect(mailboxes).toEqual([{ id: MAILBOX_ID, email: MAILBOX_ID }]);
+    expect(mailboxes).toEqual([{ id: MAILBOX_ID, address: MAILBOX_ID }]);
   });
 
   it("unwraps the merged page from the all-mailbox reads", async () => {
     stubFetch(() =>
       jsonResponse({
-        ok: true,
-        result: {
-          emails: [
-            {
-              id: "m1",
-              subject: "Subject m1",
-              date: "2026-01-01T00:00:00.000Z",
-              read: true,
-              starred: false,
-              folder_id: "inbox",
-              mailboxId: MAILBOX_ID,
-            },
-          ],
-          totalCount: 1,
-        },
+        emails: [
+          {
+            id: "m1",
+            subject: "Subject m1",
+            date: "2026-01-01T00:00:00.000Z",
+            read: true,
+            starred: false,
+            folder_id: "inbox",
+            mailbox_id: MAILBOX_ID,
+          },
+        ],
+        totalCount: 1,
       }),
     );
     const api = new ScopedApi(appSession());
@@ -161,15 +158,15 @@ describe("global-key wire shape", () => {
     expect(lastBody()).toMatchObject({ page: 1, limit: 25 });
     expect(page.totalCount).toBe(1);
     expect(page.emails.map((entry) => entry.id)).toEqual(["m1"]);
-    expect(page.emails[0]?.mailboxId).toBe(MAILBOX_ID);
+    expect(page.emails[0]?.mailbox_id).toBe(MAILBOX_ID);
 
     // The all-mailbox search answers the same page shape and unwraps too.
     const searched = await api.searchAllMailboxes({ query: "x" });
-    expect(searched.map((entry) => entry.id)).toEqual(["m1"]);
+    expect(searched.emails.map((entry) => entry.id)).toEqual(["m1"]);
   });
 
   it("applies a folder to every mailbox, and 'all' means every folder", async () => {
-    stubFetch(() => jsonResponse({ ok: true, result: { emails: [], totalCount: 0 } }));
+    stubFetch(() => jsonResponse({ emails: [], totalCount: 0 }));
     const api = new ScopedApi(appSession());
     await api.listAllEmails("inbox");
     expect(lastBody()).toMatchObject({ folder: "inbox" });
@@ -208,8 +205,8 @@ describe("error mapping", () => {
     await expect(api.listEmails(MAILBOX_ID, "inbox")).rejects.toMatchObject({ status: 502, message: "Request failed (502)" });
   });
 
-  it("unwraps the result on success", async () => {
-    stubFetch(() => jsonResponse({ ok: true, result: { status: "sent", messageId: "m1", message: "Reply sent to a@b.test" } }));
+  it("returns the tool result on success", async () => {
+    stubFetch(() => jsonResponse({ status: "sent", messageId: "m1", message: "Reply sent to a@b.test" }));
     const api = new ScopedApi(mailboxSession());
     const result = await api.sendEmail(MAILBOX_ID, { to: "a@b.test", subject: "s", body: "hello" });
     expect(result.status).toBe("sent");
@@ -256,7 +253,7 @@ describe("error mapping", () => {
 
 describe("manage tools", () => {
   it("sends the manage calls under a scoped key without a mailboxId", async () => {
-    stubFetch(() => jsonResponse({ ok: true, result: { status: "updated", emailId: "e1" } }));
+    stubFetch(() => jsonResponse({ status: "updated", emailId: "e1" }));
     const api = new ScopedApi(mailboxSession());
 
     await api.markEmailRead(MAILBOX_ID, "e1", false);
@@ -285,7 +282,7 @@ describe("manage tools", () => {
 
     await api.setSenderPolicy(MAILBOX_ID, "e1", "block");
     expect(calls.at(-1)?.url).toBe(`${BASE}/api/v1/scoped/set_sender_policy`);
-    expect(lastBody()).toMatchObject({ emailId: "e1", policy: "block" });
+    expect(lastBody()).toMatchObject({ emailId: "e1", action: "block" });
 
     await api.unsubscribeEmail(MAILBOX_ID, "e1");
     expect(calls.at(-1)?.url).toBe(`${BASE}/api/v1/scoped/unsubscribe_email`);
@@ -293,14 +290,14 @@ describe("manage tools", () => {
   });
 
   it("names the mailbox on manage calls under a global key", async () => {
-    stubFetch(() => jsonResponse({ ok: true, result: { status: "moved" } }));
+    stubFetch(() => jsonResponse({ status: "moved" }));
     const api = new ScopedApi(appSession());
     await api.moveEmail(MAILBOX_ID, "e1", "trash");
     expect(lastBody()).toMatchObject({ mailboxId: MAILBOX_ID, emailId: "e1", folderId: "trash" });
   });
 
   it("refuses a manage call that names another mailbox under a scoped key", async () => {
-    stubFetch(() => jsonResponse({ ok: true, result: {} }));
+    stubFetch(() => jsonResponse({}));
     const api = new ScopedApi(mailboxSession());
     await expect(api.deleteEmail("someone@else.test", "e1")).rejects.toThrow(/scoped to a single mailbox/);
     expect(calls).toHaveLength(0);
@@ -309,7 +306,7 @@ describe("manage tools", () => {
 
 describe("runManageBatch", () => {
   it("applies one action to many ids, in order, with progress", async () => {
-    stubFetch(() => jsonResponse({ ok: true, result: { status: "updated" } }));
+    stubFetch(() => jsonResponse({ status: "updated" }));
     const api = new ScopedApi(mailboxSession());
     const seen: string[] = [];
     const result = await runManageBatch(api, MAILBOX_ID, ["a", "b", "c"], { kind: "read", read: true }, (done, total) => {
@@ -329,7 +326,7 @@ describe("runManageBatch", () => {
     let n = 0;
     stubFetch(() => {
       n += 1;
-      return n === 2 ? jsonResponse({ error: "This token lacks the manage scope" }, 403) : jsonResponse({ ok: true, result: {} });
+      return n === 2 ? jsonResponse({ error: "This token lacks the manage scope" }, 403) : jsonResponse({});
     });
     const api = new ScopedApi(mailboxSession());
     await expect(runManageBatch(api, MAILBOX_ID, ["a", "b", "c"], { kind: "star", starred: true })).rejects.toThrow(
@@ -339,7 +336,7 @@ describe("runManageBatch", () => {
   });
 
   it("moves and deletes through the same loop", async () => {
-    stubFetch(() => jsonResponse({ ok: true, result: {} }));
+    stubFetch(() => jsonResponse({}));
     const api = new ScopedApi(mailboxSession());
     await runManageBatch(api, MAILBOX_ID, ["a"], { kind: "move", folderId: "archive" });
     expect(calls.at(-1)?.url).toBe(`${BASE}/api/v1/scoped/move_email`);
@@ -350,31 +347,9 @@ describe("runManageBatch", () => {
   });
 });
 
-describe("get_image", () => {
-  it("posts the url and returns the base64 payload", async () => {
-    stubFetch(() =>
-      jsonResponse({ ok: true, result: { contentType: "image/png", bytes: 3, cached: false, dataBase64: "AAAA" } }),
-    );
-    const api = new ScopedApi(mailboxSession());
-    const result = await api.getImage(MAILBOX_ID, "https://cdn.example.com/a.png");
-    expect(result.contentType).toBe("image/png");
-    expect(result.dataBase64).toBe("AAAA");
-    expect(calls[0]?.url).toBe(`${BASE}/api/v1/scoped/get_image`);
-    expect(JSON.parse(String(calls[0]?.init.body))).toMatchObject({ url: "https://cdn.example.com/a.png" });
-  });
-
-  it("omits mailboxId under a scoped key", async () => {
-    stubFetch(() => jsonResponse({ ok: true, result: { contentType: "image/png", dataBase64: "AA==" } }));
-    const api = new ScopedApi(mailboxSession());
-    await api.getImage(null, "https://cdn.example.com/b.png");
-    const body = JSON.parse(String(calls[0]?.init.body)) as Record<string, unknown>;
-    expect(body).not.toHaveProperty("mailboxId");
-  });
-});
-
 describe("label tools", () => {
   it("keeps every call on the scoped surface, without a mailboxId", async () => {
-    stubFetch(() => jsonResponse({ ok: true, result: { labels: [] } }));
+    stubFetch(() => jsonResponse({ labels: [] }));
     const api = new ScopedApi(mailboxSession());
 
     await api.listLabels(MAILBOX_ID);
@@ -408,7 +383,7 @@ describe("label tools", () => {
 
 describe("template and saved-search tools", () => {
   it("posts the template calls", async () => {
-    stubFetch(() => jsonResponse({ ok: true, result: { templates: [] } }));
+    stubFetch(() => jsonResponse({ templates: [] }));
     const api = new ScopedApi(mailboxSession());
 
     await api.listTemplates(MAILBOX_ID);
@@ -429,7 +404,7 @@ describe("template and saved-search tools", () => {
   });
 
   it("posts the saved-search calls", async () => {
-    stubFetch(() => jsonResponse({ ok: true, result: { searches: [] } }));
+    stubFetch(() => jsonResponse({ searches: [] }));
     const api = new ScopedApi(mailboxSession());
 
     await api.listSavedSearches(MAILBOX_ID);
@@ -449,7 +424,7 @@ describe("template and saved-search tools", () => {
 
 describe("thread and trash tools", () => {
   it("posts the thread actions", async () => {
-    stubFetch(() => jsonResponse({ ok: true, result: { muted: true } }));
+    stubFetch(() => jsonResponse({ muted: true }));
     const api = new ScopedApi(mailboxSession());
 
     await api.muteThread(MAILBOX_ID, "th1");
@@ -468,7 +443,7 @@ describe("thread and trash tools", () => {
   });
 
   it("posts restore and empty-trash", async () => {
-    stubFetch(() => jsonResponse({ ok: true, result: { status: "restored" } }));
+    stubFetch(() => jsonResponse({ status: "restored" }));
     const api = new ScopedApi(mailboxSession());
 
     await api.restoreEmail(MAILBOX_ID, "e1");
@@ -483,7 +458,7 @@ describe("thread and trash tools", () => {
 
 describe("scheduled sends", () => {
   it("converts the body and posts the schedule", async () => {
-    stubFetch(() => jsonResponse({ ok: true, result: { id: "s1", send_at: "2026-10-05T12:00:00.000Z" } }));
+    stubFetch(() => jsonResponse({ id: "s1", send_at: "2026-10-05T12:00:00.000Z" }));
     const api = new ScopedApi(mailboxSession());
     await api.scheduleSend(MAILBOX_ID, {
       to: "a@b.test",
@@ -504,16 +479,12 @@ describe("scheduled sends", () => {
     expect(Object.keys(body)).not.toContain("bcc");
   });
 
-  it("lists, cancels and retries by scheduledSendId", async () => {
-    stubFetch(() => jsonResponse({ ok: true, result: { sends: [] } }));
+  it("lists and retries by scheduledSendId", async () => {
+    stubFetch(() => jsonResponse({ sends: [] }));
     const api = new ScopedApi(mailboxSession());
 
     await api.listScheduledSends(MAILBOX_ID);
     expect(calls.at(-1)?.url).toBe(`${BASE}/api/v1/scoped/list_scheduled_sends`);
-
-    await api.cancelScheduledSend(MAILBOX_ID, "s1");
-    expect(calls.at(-1)?.url).toBe(`${BASE}/api/v1/scoped/cancel_scheduled_send`);
-    expect(lastBody()).toMatchObject({ scheduledSendId: "s1" });
 
     await api.retryScheduledSend(MAILBOX_ID, "s1");
     expect(calls.at(-1)?.url).toBe(`${BASE}/api/v1/scoped/retry_scheduled_send`);
@@ -523,7 +494,7 @@ describe("scheduled sends", () => {
 
 describe("runRestoreBatch", () => {
   it("restores many ids, in order, with progress", async () => {
-    stubFetch(() => jsonResponse({ ok: true, result: { status: "restored" } }));
+    stubFetch(() => jsonResponse({ status: "restored" }));
     const api = new ScopedApi(mailboxSession());
     const seen: string[] = [];
     const result = await runRestoreBatch(api, MAILBOX_ID, ["a", "b"], (done, total) => {
@@ -541,7 +512,7 @@ describe("runRestoreBatch", () => {
     let n = 0;
     stubFetch(() => {
       n += 1;
-      return n === 2 ? jsonResponse({ error: "Not in the Trash" }, 400) : jsonResponse({ ok: true, result: {} });
+      return n === 2 ? jsonResponse({ error: "Not in the Trash" }, 400) : jsonResponse({});
     });
     const api = new ScopedApi(mailboxSession());
     await expect(runRestoreBatch(api, MAILBOX_ID, ["a", "b", "c"])).rejects.toThrow(

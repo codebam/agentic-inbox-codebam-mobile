@@ -3,9 +3,9 @@ import { Pressable, StyleSheet, View } from "react-native";
 
 import { ThemedText } from "@/components/themed-text";
 import { useTheme } from "@/hooks/use-theme";
-import type { EmailSummary } from "@/lib/api";
+import { folderOf, type EmailSummary } from "@/lib/api";
 import { stripHtmlToText } from "@/lib/email-html";
-import { formatEmailDate, senderInitial, senderName, truncate } from "@/lib/format";
+import { folderDisplayName, formatEmailDate, senderInitial, senderName, truncate } from "@/lib/format";
 
 export function EmailRow({
   email,
@@ -72,10 +72,10 @@ export function EmailRow({
           <ThemedText type="small" numberOfLines={1} style={[styles.folder, { color: theme.tint }]}>
             {accountLabel}
           </ThemedText>
-        ) : showFolder && email.folder_name ? (
+        ) : showFolder ? (
           <ThemedText type="small" style={[styles.folder, { color: theme.tint }]}>
-            {email.folder_name}
-            {email.mailboxId ? ` · ${email.mailboxId}` : ""}
+            {folderDisplayName(folderOf(email))}
+            {email.mailbox_id ? ` · ${email.mailbox_id}` : ""}
           </ThemedText>
         ) : null}
       </View>

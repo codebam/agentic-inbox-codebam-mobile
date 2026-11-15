@@ -1,7 +1,8 @@
 /**
- * The agentic-inbox scoped automation API client.
+ * The mailflare-codebam scoped automation API client.
  *
- * Every call is `POST {baseUrl}/api/v1/scoped/<tool>` with a bearer key.
+ * Every call is `POST {baseUrl}/api/v1/scoped/<tool>` with a bearer key and
+ * the tool's JSON result comes back directly (errors as `{ error }`).
  * Two key kinds are accepted by the surface, and the body differs:
  *
  *  - a mailbox key (ain1_) is bound to one mailbox: calls must NEVER carry
@@ -10,7 +11,8 @@
  *    MUST carry `mailboxId` (the surface answers 400 when it doesn't), and
  *    only it may call the all-mailbox reads.
  *
- * This client encodes that contract so no caller can get it wrong.
+ * This client encodes that contract so no caller can get it wrong. The
+ * types mirror the mailflare-codebam facade's wire shapes.
  */
 
 import { plainTextToHtml } from "./email-html";
@@ -66,13 +68,35 @@ export class ApiError extends Error {
 
 export interface Mailbox {
   id: string;
-  email: string;
+  address: string;
+  displayName?: string | null;
 }
 
-/** One page of the all-mailbox listing: rows plus the exact deployment total. */
+/** One list row: system folders are virtual, so `status` carries the folder. */
+export interface EmailSummary {
+  id: string;
+  subject: string | null;
+  sender: string | null;
+  recipient: string | null;
+  date: string;
+  read: boolean;
+  starred: boolean;
+  thread_id: string | null;
+  category: string | null;
+  /** A user folder id, or null when the message sits in a system folder. */
+  folder_id: string | null;
+  status: string;
+  snippet: string | null;
+  /** Present on the all-mailbox rows: the mailbox the message came from. */
+  mailbox_id?: string;
+}
+
+/** One page of a listing: rows plus the exact total. */
 export interface EmailsResult {
   emails: EmailSummary[];
   totalCount: number;
+  page?: number;
+  limit?: number;
 }
 
 export interface AttachmentInfo {
@@ -80,65 +104,45 @@ export interface AttachmentInfo {
   filename: string;
   mimetype: string;
   size: number;
-  content_id?: string | null;
-  disposition?: string | null;
-}
-
-export interface EmailSummary {
-  id: string;
-  subject?: string | null;
-  sender?: string | null;
-  recipient?: string | null;
-  envelope_recipient?: string | null;
-  cc?: string | null;
-  bcc?: string | null;
-  date: string;
-  read: boolean;
-  starred: boolean;
-  in_reply_to?: string | null;
-  thread_id?: string | null;
-  folder_id: string;
-  folder_name?: string | null;
-  category?: string | null;
-  snippet?: string | null;
-  /** Present on the all-mailbox rows: the mailbox the message came from. */
-  mailboxId?: string;
 }
 
 export interface EmailFull extends EmailSummary {
-  body?: string | null;
-  body_text?: string | null;
-  body_html?: string | null;
+  cc?: string | null;
+  bcc?: string | null;
   reply_to?: string | null;
+  message_id?: string | null;
+  in_reply_to?: string | null;
+  bodyText: string | null;
+  bodyHtml: string | null;
+  delivered_to?: string | null;
+  delivery_status?: string | null;
+  delivery_detail?: string | null;
+  labels?: string[];
   attachments?: AttachmentInfo[];
-  trashed_at?: string | null;
-  /** Raw List-Unsubscribe header; present only when the sender set one. */
-  list_unsubscribe?: string | null;
-  /** RFC 8058 one-click marker; the Unsubscribe action needs it and an https target. */
-  list_unsubscribe_post?: string | null;
 }
 
 export interface ThreadResult {
   thread_id: string;
-  message_count: number;
-  messages: EmailFull[];
-  /** Whether new mail in the thread is skipped by notifications. */
-  muted?: boolean;
+  emails: EmailFull[];
 }
 
 /** Result of get_attachment: metadata plus text content or an omission reason. */
 export interface AttachmentResult {
-  mailboxId: string;
-  attachment: AttachmentInfo & { emailId?: string };
-  content:
-    | { kind: "text"; text: string; truncated: boolean }
-    | { kind: "omitted"; reason: string };
+  id: string;
+  messageId: string;
+  filename: string;
+  mimetype: string;
+  size: number;
+  content: string | null;
+  omitted?: string;
+  truncated?: boolean;
 }
 
 export interface SearchFilters {
   query?: string;
   folder?: string;
   category?: string;
+  label?: string;
   from?: string;
   to?: string;
   subject?: string;
@@ -152,28 +156,25 @@ export interface SearchFilters {
 }
 
 export interface DraftSavedResult {
-  status: string;
   draftId: string;
+  revision?: number;
+  sourceMessageId?: string | null;
+  status?: string;
   message?: string;
-  signatureApplied?: boolean;
 }
 
 export interface DraftUpdatedResult {
+  draftId: string;
   status: string;
-  newDraftId: string;
-  oldDraftId: string;
-  message?: string;
 }
 
 export interface SendResult {
-  status: "sent";
   messageId: string;
-  message?: string;
+  status: string;
 }
 
 export interface DiscardedResult {
-  status: string;
-  draftId: string;
+  deleted: boolean;
 }
 
 /** One manage-action answer; the fields the UI reads are optional. */
@@ -188,20 +189,16 @@ export interface Label {
   id: string;
   name: string;
   color?: string | null;
-  created_at?: string;
+  createdAt?: string;
 }
 
 export interface LabelListResult {
-  mailboxId: string;
   labels: Label[];
-  note?: string;
 }
 
 /** Result of add_label / remove_label: the message's labels after the change. */
 export interface LabelUpdateResult {
-  status: string;
   emailId: string;
-  label: Label;
   labels: Label[];
 }
 
@@ -211,12 +208,11 @@ export interface TemplateRow {
   name: string;
   subject?: string | null;
   body?: string | null;
-  created_at?: string;
-  updated_at?: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface TemplateListResult {
-  mailboxId: string;
   templates: TemplateRow[];
 }
 
@@ -225,47 +221,33 @@ export interface SavedSearchRow {
   id: string;
   name: string;
   query: string;
-  created_at?: string;
+  createdAt?: string;
 }
 
-/** The stored send parameters of one scheduled send, as far as the app reads them. */
-export interface ScheduledSendPayload {
-  to?: string | string[];
-  subject?: string;
-  from?: string;
-  [key: string]: unknown;
-}
-
-/** One queued outbound message. */
+/** One queued outbound message, as the facade lists it. */
 export interface ScheduledSend {
   id: string;
-  draft_id: string | null;
-  send_at: string;
+  to: string | null;
+  subject: string | null;
+  sendAt: string | null;
   status: string;
-  payload: ScheduledSendPayload | null;
-  attempts: number;
-  last_error: string | null;
-  created_at: string;
-  sent_at: string | null;
 }
 
 export interface ScheduledSendListResult {
-  mailboxId: string;
   sends: ScheduledSend[];
-  totalCount: number;
-}
-
-export interface ScheduledSendActionResult {
-  status: string;
-  send: ScheduledSend;
 }
 
 /** A thread summary built on demand; never stored server-side. */
 export interface ThreadSummary {
-  text: string;
-  message_count: number;
-  truncated: boolean;
-  model: string;
+  thread_id: string;
+  summary: string;
+}
+
+/** One file to attach to an outbound email (base64-encoded bytes). */
+export interface OutboundAttachment {
+  filename: string;
+  mimetype: string;
+  content_base64: string;
 }
 
 /** One batch action; each kind maps to the matching single-manage tool. */
@@ -275,19 +257,28 @@ export type BatchAction =
   | { kind: "move"; folderId: string }
   | { kind: "delete"; permanent: boolean };
 
-/** One proxied message image, ready to inline as a data: URL. */
-export interface ImageResult {
-  contentType: string;
-  bytes?: number;
-  cached?: boolean;
-  dataBase64: string;
-}
-
 export interface ComposeBody {
   to: string;
   subject: string;
   /** Plain text; converted to the composer's canonical HTML before sending. */
   body: string;
+}
+
+/**
+ * The folder a row sits in, as a display/navigation key: a user folder id
+ * when set, else the system folder synthesized from the message status.
+ */
+export function folderOf(row: Pick<EmailSummary, "folder_id" | "status">): string {
+  if (row.folder_id) return row.folder_id;
+  switch (row.status) {
+    case "sent": return "sent";
+    case "draft": return "draft";
+    case "archived": return "archive";
+    case "spam": return "spam";
+    case "trash": return "trash";
+    case "queued": return "scheduled";
+    default: return "inbox";
+  }
 }
 
 function cleanFilters(filters: SearchFilters): Record<string, unknown> {
@@ -373,7 +364,7 @@ export class ScopedApi {
     if (typeof record.error === "string" && record.error) {
       throw new ApiError(record.error, response.status);
     }
-    return record.result as T;
+    return record as T;
   }
 
   // ── mailbox-scoped tools ─────────────────────────────────────────────
@@ -382,14 +373,14 @@ export class ScopedApi {
     mailboxId: string | null,
     folder = "inbox",
     options: { page?: number; limit?: number; category?: string } = {},
-  ): Promise<EmailSummary[]> {
+  ): Promise<EmailsResult> {
     const args: Record<string, unknown> = {
       folder,
       page: options.page ?? 1,
       limit: options.limit ?? 25,
     };
     if (options.category) args.category = options.category;
-    return this.call<EmailSummary[]>("list_emails", this.mailboxBody(mailboxId, args));
+    return this.call<EmailsResult>("list_emails", this.mailboxBody(mailboxId, args));
   }
 
   async getEmail(mailboxId: string | null, emailId: string): Promise<EmailFull> {
@@ -400,21 +391,12 @@ export class ScopedApi {
     return this.call<ThreadResult>("get_thread", this.mailboxBody(mailboxId, { threadId }));
   }
 
-  async searchEmails(mailboxId: string | null, filters: SearchFilters): Promise<EmailSummary[]> {
-    return this.call<EmailSummary[]>("search_emails", this.mailboxBody(mailboxId, cleanFilters(filters)));
+  async searchEmails(mailboxId: string | null, filters: SearchFilters): Promise<EmailsResult> {
+    return this.call<EmailsResult>("search_emails", this.mailboxBody(mailboxId, cleanFilters(filters)));
   }
 
   async getAttachment(mailboxId: string | null, attachmentId: string): Promise<AttachmentResult> {
     return this.call<AttachmentResult>("get_attachment", this.mailboxBody(mailboxId, { attachmentId }));
-  }
-
-  /**
-   * One remote image of a message, relayed through the deployment's SSRF
-   * guard and cache and answered as base64 (read scope). The app inlines
-   * the bytes as a data: URL; the sender never sees the device.
-   */
-  async getImage(mailboxId: string | null, url: string): Promise<ImageResult> {
-    return this.call<ImageResult>("get_image", this.mailboxBody(mailboxId, { url }));
   }
 
   // ── manage tools ─────────────────────────────────────────────────────
@@ -432,7 +414,11 @@ export class ScopedApi {
   }
 
   async deleteEmail(mailboxId: string | null, emailId: string, permanent = false): Promise<ManageResult> {
-    return this.call<ManageResult>("delete_email", this.mailboxBody(mailboxId, { emailId, permanent }));
+    // The surface refuses a permanent delete without an explicit confirm;
+    // the app only reaches permanent after its own confirmation dialog.
+    const args: Record<string, unknown> = { emailId, permanent };
+    if (permanent) args.confirm = true;
+    return this.call<ManageResult>("delete_email", this.mailboxBody(mailboxId, args));
   }
 
   async snoozeEmail(mailboxId: string | null, emailId: string, until: string): Promise<ManageResult> {
@@ -444,7 +430,7 @@ export class ScopedApi {
   }
 
   async setSenderPolicy(mailboxId: string | null, emailId: string, policy: "allow" | "block"): Promise<ManageResult> {
-    return this.call<ManageResult>("set_sender_policy", this.mailboxBody(mailboxId, { emailId, policy }));
+    return this.call<ManageResult>("set_sender_policy", this.mailboxBody(mailboxId, { emailId, action: policy }));
   }
 
   async unsubscribeEmail(mailboxId: string | null, emailId: string): Promise<ManageResult> {
@@ -513,7 +499,7 @@ export class ScopedApi {
 
   async sendEmail(
     mailboxId: string | null,
-    input: { to: string; cc?: string; bcc?: string; subject: string; body: string },
+    input: { to: string; cc?: string; bcc?: string; subject: string; body: string; attachments?: OutboundAttachment[] },
   ): Promise<SendResult> {
     const args: Record<string, unknown> = {
       to: input.to,
@@ -522,6 +508,9 @@ export class ScopedApi {
     };
     if (input.cc) args.cc = input.cc;
     if (input.bcc) args.bcc = input.bcc;
+    if (input.attachments?.length) {
+      args.attachments = input.attachments.map(({ filename, mimetype, content_base64 }) => ({ filename, mimetype, content_base64 }));
+    }
     return this.call<SendResult>("send_email", this.mailboxBody(mailboxId, args));
   }
 
@@ -531,24 +520,24 @@ export class ScopedApi {
     return this.call<LabelListResult>("list_labels", this.mailboxBody(mailboxId, {}));
   }
 
-  async createLabel(mailboxId: string | null, input: { name: string; color?: string }): Promise<Label> {
+  async createLabel(mailboxId: string | null, input: { name: string; color?: string }): Promise<{ label: Label }> {
     const args: Record<string, unknown> = { name: input.name };
     if (input.color) args.color = input.color;
-    return this.call<Label>("create_label", this.mailboxBody(mailboxId, args));
+    return this.call<{ label: Label }>("create_label", this.mailboxBody(mailboxId, args));
   }
 
   async updateLabel(
     mailboxId: string | null,
     input: { label: string; name?: string; color?: string },
-  ): Promise<Label> {
+  ): Promise<{ label: Label }> {
     const args: Record<string, unknown> = { label: input.label };
     if (input.name !== undefined) args.name = input.name;
     if (input.color !== undefined) args.color = input.color;
-    return this.call<Label>("update_label", this.mailboxBody(mailboxId, args));
+    return this.call<{ label: Label }>("update_label", this.mailboxBody(mailboxId, args));
   }
 
-  async deleteLabel(mailboxId: string | null, label: string): Promise<{ ok: boolean }> {
-    return this.call<{ ok: boolean }>("delete_label", this.mailboxBody(mailboxId, { label }));
+  async deleteLabel(mailboxId: string | null, label: string): Promise<{ deleted: boolean }> {
+    return this.call<{ deleted: boolean }>("delete_label", this.mailboxBody(mailboxId, { label }));
   }
 
   async addLabel(mailboxId: string | null, emailId: string, label: string): Promise<LabelUpdateResult> {
@@ -568,25 +557,25 @@ export class ScopedApi {
   async createTemplate(
     mailboxId: string | null,
     input: { name: string; subject?: string; body: string },
-  ): Promise<TemplateRow> {
+  ): Promise<{ template: TemplateRow }> {
     const args: Record<string, unknown> = { name: input.name, body: input.body };
     if (input.subject) args.subject = input.subject;
-    return this.call<TemplateRow>("create_template", this.mailboxBody(mailboxId, args));
+    return this.call<{ template: TemplateRow }>("create_template", this.mailboxBody(mailboxId, args));
   }
 
   async updateTemplate(
     mailboxId: string | null,
     input: { templateId: string; name?: string; subject?: string; body?: string },
-  ): Promise<TemplateRow> {
+  ): Promise<{ template: TemplateRow }> {
     const args: Record<string, unknown> = { templateId: input.templateId };
     if (input.name !== undefined) args.name = input.name;
     if (input.subject !== undefined) args.subject = input.subject;
     if (input.body !== undefined) args.body = input.body;
-    return this.call<TemplateRow>("update_template", this.mailboxBody(mailboxId, args));
+    return this.call<{ template: TemplateRow }>("update_template", this.mailboxBody(mailboxId, args));
   }
 
-  async deleteTemplate(mailboxId: string | null, templateId: string): Promise<{ ok: boolean }> {
-    return this.call<{ ok: boolean }>("delete_template", this.mailboxBody(mailboxId, { templateId }));
+  async deleteTemplate(mailboxId: string | null, templateId: string): Promise<{ deleted: boolean }> {
+    return this.call<{ deleted: boolean }>("delete_template", this.mailboxBody(mailboxId, { templateId }));
   }
 
   // ── saved-search tools ───────────────────────────────────────────────
@@ -601,8 +590,8 @@ export class ScopedApi {
   async createSavedSearch(
     mailboxId: string | null,
     input: { name: string; query: string },
-  ): Promise<SavedSearchRow> {
-    return this.call<SavedSearchRow>(
+  ): Promise<{ search: SavedSearchRow }> {
+    return this.call<{ search: SavedSearchRow }>(
       "create_saved_search",
       this.mailboxBody(mailboxId, { name: input.name, query: input.query }),
     );
@@ -611,15 +600,15 @@ export class ScopedApi {
   async updateSavedSearch(
     mailboxId: string | null,
     input: { searchId: string; name?: string; query?: string },
-  ): Promise<SavedSearchRow> {
+  ): Promise<{ search: SavedSearchRow }> {
     const args: Record<string, unknown> = { searchId: input.searchId };
     if (input.name !== undefined) args.name = input.name;
     if (input.query !== undefined) args.query = input.query;
-    return this.call<SavedSearchRow>("update_saved_search", this.mailboxBody(mailboxId, args));
+    return this.call<{ search: SavedSearchRow }>("update_saved_search", this.mailboxBody(mailboxId, args));
   }
 
-  async deleteSavedSearch(mailboxId: string | null, searchId: string): Promise<{ ok: boolean }> {
-    return this.call<{ ok: boolean }>("delete_saved_search", this.mailboxBody(mailboxId, { searchId }));
+  async deleteSavedSearch(mailboxId: string | null, searchId: string): Promise<{ deleted: boolean }> {
+    return this.call<{ deleted: boolean }>("delete_saved_search", this.mailboxBody(mailboxId, { searchId }));
   }
 
   // ── thread tools ─────────────────────────────────────────────────────
@@ -646,8 +635,8 @@ export class ScopedApi {
     return this.call<ManageResult>("restore_email", this.mailboxBody(mailboxId, { emailId }));
   }
 
-  async emptyTrash(mailboxId: string | null): Promise<{ purged: number }> {
-    return this.call<{ purged: number }>("empty_trash", this.mailboxBody(mailboxId, {}));
+  async emptyTrash(mailboxId: string | null): Promise<{ deleted: number }> {
+    return this.call<{ deleted: number }>("empty_trash", this.mailboxBody(mailboxId, { confirm: true }));
   }
 
   // ── scheduled-send tools ─────────────────────────────────────────────
@@ -662,7 +651,7 @@ export class ScopedApi {
   async scheduleSend(
     mailboxId: string | null,
     input: { to: string; subject: string; body: string; sendAt: string; cc?: string; bcc?: string },
-  ): Promise<ScheduledSend> {
+  ): Promise<{ id: string; status: string; sendAt: string }> {
     const args: Record<string, unknown> = {
       to: input.to,
       subject: input.subject,
@@ -671,24 +660,14 @@ export class ScopedApi {
     };
     if (input.cc) args.cc = input.cc;
     if (input.bcc) args.bcc = input.bcc;
-    return this.call<ScheduledSend>("schedule_send", this.mailboxBody(mailboxId, args));
-  }
-
-  async cancelScheduledSend(
-    mailboxId: string | null,
-    scheduledSendId: string,
-  ): Promise<ScheduledSendActionResult> {
-    return this.call<ScheduledSendActionResult>(
-      "cancel_scheduled_send",
-      this.mailboxBody(mailboxId, { scheduledSendId }),
-    );
+    return this.call<{ id: string; status: string; sendAt: string }>("schedule_send", this.mailboxBody(mailboxId, args));
   }
 
   async retryScheduledSend(
     mailboxId: string | null,
     scheduledSendId: string,
-  ): Promise<ScheduledSendActionResult> {
-    return this.call<ScheduledSendActionResult>(
+  ): Promise<{ id: string; status: string }> {
+    return this.call<{ id: string; status: string }>(
       "retry_scheduled_send",
       this.mailboxBody(mailboxId, { scheduledSendId }),
     );
@@ -701,16 +680,15 @@ export class ScopedApi {
     return this.call<Mailbox[]>("list_mailboxes", {});
   }
 
-  async searchAllMailboxes(filters: SearchFilters): Promise<EmailSummary[]> {
+  async searchAllMailboxes(filters: SearchFilters): Promise<EmailsResult> {
     this.assertAppKey("search_all_mailboxes");
-    const result = await this.call<EmailsResult>("search_all_mailboxes", cleanFilters(filters));
-    return result.emails;
+    return this.call<EmailsResult>("search_all_mailboxes", cleanFilters(filters));
   }
 
   /**
    * Every mailbox's mail merged by date (newest first) — the All Accounts
    * listing. A folder applies to every mailbox; null (or "all") merges
-   * every folder. Each row carries `mailboxId`.
+   * every folder. Each row carries `mailbox_id`.
    */
   async listAllEmails(
     folder: string | null,

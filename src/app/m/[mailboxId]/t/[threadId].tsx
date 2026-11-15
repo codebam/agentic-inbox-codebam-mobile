@@ -29,6 +29,8 @@ export default function ThreadScreen() {
   const [notice, setNotice] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [summary, setSummary] = useState<ThreadSummary | null>(null);
+  // The facade's get_thread carries no mute flag; track the toggle locally.
+  const [mutedOverride, setMutedOverride] = useState<boolean | null>(null);
 
   if (!ready) return <Loading />;
   if (!session || !api) return <Redirect href="/connect" />;
@@ -37,9 +39,9 @@ export default function ThreadScreen() {
     return <Redirect href={{ pathname: "/m/[mailboxId]", params: { mailboxId: ownMailbox } }} />;
   }
 
-  const messages = query.data?.messages ?? [];
+  const messages = query.data?.emails ?? [];
   const title = truncate(messages[0]?.subject?.trim() || "Thread", 42);
-  const muted = query.data?.muted ?? false;
+  const muted = mutedOverride ?? false;
 
   const fail = (error: unknown) => {
     setNotice(null);
@@ -52,8 +54,10 @@ export default function ThreadScreen() {
     muteThread.mutate(
       { threadId, muted: !muted },
       {
-        onSuccess: () =>
-          setNotice(muted ? "Thread unmuted." : "Thread muted — new mail in it stays quiet."),
+        onSuccess: () => {
+          setMutedOverride(!muted);
+          setNotice(muted ? "Thread unmuted." : "Thread muted — new mail in it stays quiet.");
+        },
         onError: fail,
       },
     );
@@ -161,15 +165,8 @@ export default function ThreadScreen() {
               <ThemedText type="smallBold">Thread summary</ThemedText>
             </View>
             <ThemedText type="small" selectable style={styles.summaryText}>
-              {summary?.text ?? ""}
+              {summary?.summary ?? ""}
             </ThemedText>
-            {summary ? (
-              <ThemedText type="small" themeColor="textSecondary">
-                {summary.message_count} {summary.message_count === 1 ? "message" : "messages"} ·{" "}
-                {summary.model}
-                {summary.truncated ? " · shortened for length" : ""}
-              </ThemedText>
-            ) : null}
             <Pressable
               onPress={() => setSummary(null)}
               style={({ pressed }) => [

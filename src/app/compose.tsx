@@ -12,7 +12,8 @@ import { ThemedText } from "@/components/themed-text";
 import { Spacing } from "@/constants/theme";
 import { useTheme } from "@/hooks/use-theme";
 import type { TemplateRow } from "@/lib/api";
-import { formatFullDate, truncate } from "@/lib/format";
+import { MAX_ATTACHMENTS, pickAttachments, totalAttachmentBytes, type PickedAttachment } from "@/lib/attachments";
+import { formatFileSize, formatFullDate, truncate } from "@/lib/format";
 import { sendLaterPresets } from "@/lib/manage";
 import { useCreateDraft, useDraftReply, useScheduleSend, useSendEmail, useSendReply, useTemplates, useUpdateDraft } from "@/lib/queries";
 import { useSession } from "@/lib/session";
@@ -45,6 +46,8 @@ export default function ComposeScreen() {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [templateSheet, setTemplateSheet] = useState(false);
   const [laterSheet, setLaterSheet] = useState<{ label: string; sendAt: string }[] | null>(null);
+  const [attachments, setAttachments] = useState<PickedAttachment[]>([]);
+  const [picking, setPicking] = useState(false);
 
   const sendReply = useSendReply(api, mailboxId);
   const sendEmail = useSendEmail(api, mailboxId);
@@ -57,7 +60,7 @@ export default function ComposeScreen() {
   const sending = sendReply.isPending || sendEmail.isPending;
   const scheduling = scheduleSend.isPending;
   const saving = draftReply.isPending || createDraft.isPending || updateDraft.isPending;
-  const busy = sending || saving || scheduling;
+  const busy = sending || saving || scheduling || picking;
 
   if (!ready) return <Loading />;
   if (!session || !api) return <Redirect href="/connect" />;
@@ -82,15 +85,15 @@ export default function ComposeScreen() {
       sendReply.mutate(
         { originalEmailId: params.emailId, to: to.trim(), subject: subject.trim(), body },
         {
-          onSuccess: (result) => done(result.message ?? `Reply sent to ${to.trim()}.`, 1200),
+          onSuccess: () => done(`Reply sent to ${to.trim()}.`, 1200),
           onError: fail,
         },
       );
     } else {
       sendEmail.mutate(
-        { to: to.trim(), subject: subject.trim(), body },
+        { to: to.trim(), subject: subject.trim(), body, attachments: attachments.length ? attachments : undefined },
         {
-          onSuccess: (result) => done(result.message ?? `Message sent to ${to.trim()}.`, 1200),
+          onSuccess: () => done(`Message sent to ${to.trim()}.`, 1200),
           onError: fail,
         },
       );
@@ -112,8 +115,25 @@ export default function ComposeScreen() {
       setError(problem);
       return;
     }
+    if (attachments.length) {
+      setError("Attachments can't be scheduled — send the message now, or remove the attachments first.");
+      return;
+    }
     setError(null);
     setLaterSheet(sendLaterPresets(new Date()));
+  };
+
+  const attachFiles = async () => {
+    setError(null);
+    setPicking(true);
+    try {
+      const picked = await pickAttachments(attachments);
+      if (picked) setAttachments(picked);
+    } catch (err) {
+      fail(err);
+    } finally {
+      setPicking(false);
+    }
   };
 
   const performSchedule = (sendAt: string) => {
@@ -122,7 +142,7 @@ export default function ComposeScreen() {
     scheduleSend.mutate(
       { to: to.trim(), subject: subject.trim(), body, sendAt },
       {
-        onSuccess: (send) => done(`Scheduled for ${formatFullDate(send.send_at)}.`, 1400),
+        onSuccess: (send) => done(`Scheduled for ${formatFullDate(send.sendAt)}.`, 1400),
         onError: fail,
       },
     );
@@ -222,6 +242,31 @@ export default function ComposeScreen() {
             </View>
           </View>
 
+          {mode === "new" && attachments.length > 0 ? (
+            <View style={styles.field}>
+              <ThemedText type="small" themeColor="textSecondary">
+                Attachments ({attachments.length}/{MAX_ATTACHMENTS} · {formatFileSize(totalAttachmentBytes(attachments))})
+              </ThemedText>
+              <View style={styles.attachmentList}>
+                {attachments.map((attachment, index) => (
+                  <View key={`${attachment.filename}-${index}`} style={[styles.attachmentChip, { backgroundColor: theme.backgroundElement }]}>
+                    <Ionicons name="document-outline" size={14} color={theme.textSecondary} />
+                    <ThemedText type="small" numberOfLines={1} style={styles.attachmentName}>
+                      {attachment.filename}
+                    </ThemedText>
+                    <Pressable
+                      onPress={() => setAttachments((current) => current.filter((_, i) => i !== index))}
+                      disabled={busy}
+                      accessibilityLabel={`Remove ${attachment.filename}`}
+                      hitSlop={8}>
+                      <Ionicons name="close-circle" size={16} color={theme.textSecondary} />
+                    </Pressable>
+                  </View>
+                ))}
+              </View>
+            </View>
+          ) : null}
+
           <View style={styles.quickRow}>
             <Pressable
               onPress={() => {
@@ -236,6 +281,18 @@ export default function ComposeScreen() {
               <Ionicons name="document-text-outline" size={15} color={theme.textSecondary} />
               <ThemedText type="small">Template</ThemedText>
             </Pressable>
+            {mode === "new" ? (
+              <Pressable
+                onPress={() => void attachFiles()}
+                disabled={busy || attachments.length >= MAX_ATTACHMENTS}
+                style={({ pressed }) => [
+                  styles.chip,
+                  { backgroundColor: theme.backgroundElement, opacity: busy || attachments.length >= MAX_ATTACHMENTS ? 0.5 : pressed ? 0.7 : 1 },
+                ]}>
+                <Ionicons name="attach-outline" size={15} color={theme.textSecondary} />
+                <ThemedText type="small">{picking ? "Choosing…" : "Attach"}</ThemedText>
+              </Pressable>
+            ) : null}
             {mode === "new" ? (
               <Pressable
                 onPress={requestSendLater}
@@ -346,6 +403,21 @@ export default function ComposeScreen() {
 }
 
 const styles = StyleSheet.create({
+  attachmentList: {
+    gap: Spacing.one,
+    marginTop: Spacing.one,
+  },
+  attachmentChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.two,
+    borderRadius: 10,
+    paddingHorizontal: Spacing.two,
+    paddingVertical: 8,
+  },
+  attachmentName: {
+    flex: 1,
+  },
   container: {
     flex: 1,
   },

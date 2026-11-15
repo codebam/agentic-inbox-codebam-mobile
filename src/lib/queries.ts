@@ -4,9 +4,7 @@
  */
 
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { useMemo } from "react";
 
-import { extractImageUrls, MAX_BODY_IMAGES } from "./email-html";
 
 import {
   runManageBatch,
@@ -22,6 +20,7 @@ import {
   type EmailsResult,
   type Label,
   type Mailbox,
+  type OutboundAttachment,
   type ManageResult,
   type SavedSearchRow,
   type ScheduledSend,
@@ -92,7 +91,7 @@ export function useEmails(api: ScopedApi | null, mailboxId: string, folder: stri
     enabled: Boolean(api) && Boolean(mailboxId),
     initialPageParam: 1,
     queryFn: async ({ pageParam }): Promise<EmailSummary[]> =>
-      requireApi(api).listEmails(mailboxId, folder, { page: pageParam, limit: PAGE_SIZE }),
+      (await requireApi(api).listEmails(mailboxId, folder, { page: pageParam, limit: PAGE_SIZE })).emails,
     getNextPageParam: (lastPage, allPages) => (lastPage.length === PAGE_SIZE ? allPages.length + 1 : undefined),
   });
 }
@@ -125,8 +124,8 @@ export function useSearch(api: ScopedApi | null, mailboxId: string | null, filte
     queryFn: async (): Promise<EmailSummary[]> => {
       const client = requireApi(api);
       const target = mailboxId;
-      if (target === null) return client.searchAllMailboxes(filters);
-      return client.searchEmails(target, filters);
+      if (target === null) return (await client.searchAllMailboxes(filters)).emails;
+      return (await client.searchEmails(target, filters)).emails;
     },
   });
 }
@@ -172,7 +171,7 @@ export function useUpdateDraft(api: ScopedApi | null, mailboxId: string) {
     onSuccess: async (result) => {
       await invalidateFolder(client, api, mailboxId, "draft");
       if (api) {
-        await client.invalidateQueries({ queryKey: ["email", ...sessionScope(api), mailboxId, result.oldDraftId] });
+        await client.invalidateQueries({ queryKey: ["email", ...sessionScope(api), mailboxId, result.draftId] });
       }
     },
   });
@@ -203,7 +202,7 @@ export function useSendReply(api: ScopedApi | null, mailboxId: string) {
 export function useSendEmail(api: ScopedApi | null, mailboxId: string) {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: async (input: { to: string; subject: string; body: string }): Promise<SendResult> =>
+    mutationFn: async (input: { to: string; subject: string; body: string; attachments?: OutboundAttachment[] }): Promise<SendResult> =>
       requireApi(api).sendEmail(mailboxId, input),
     onSuccess: () => invalidateFolder(client, api, mailboxId, "sent"),
   });
@@ -315,7 +314,7 @@ export function useCreateLabel(api: ScopedApi | null, mailboxId: string) {
   const client = useQueryClient();
   return useMutation({
     mutationFn: async (input: { name: string; color?: string }): Promise<Label> =>
-      requireApi(api).createLabel(mailboxId, input),
+      (await requireApi(api).createLabel(mailboxId, input)).label,
     onSuccess: () => client.invalidateQueries({ queryKey: ["labels"] }),
   });
 }
@@ -324,7 +323,7 @@ export function useUpdateLabel(api: ScopedApi | null, mailboxId: string) {
   const client = useQueryClient();
   return useMutation({
     mutationFn: async (input: { label: string; name?: string; color?: string }): Promise<Label> =>
-      requireApi(api).updateLabel(mailboxId, input),
+      (await requireApi(api).updateLabel(mailboxId, input)).label,
     onSuccess: () => client.invalidateQueries({ queryKey: ["labels"] }),
   });
 }
@@ -332,7 +331,7 @@ export function useUpdateLabel(api: ScopedApi | null, mailboxId: string) {
 export function useDeleteLabel(api: ScopedApi | null, mailboxId: string) {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: async (label: string): Promise<{ ok: boolean }> =>
+    mutationFn: async (label: string): Promise<{ deleted: boolean }> =>
       requireApi(api).deleteLabel(mailboxId, label),
     onSuccess: () => client.invalidateQueries({ queryKey: ["labels"] }),
   });
@@ -371,7 +370,7 @@ export function useCreateTemplate(api: ScopedApi | null, mailboxId: string) {
   const client = useQueryClient();
   return useMutation({
     mutationFn: async (input: { name: string; subject?: string; body: string }): Promise<TemplateRow> =>
-      requireApi(api).createTemplate(mailboxId, input),
+      (await requireApi(api).createTemplate(mailboxId, input)).template,
     onSuccess: () => client.invalidateQueries({ queryKey: ["templates"] }),
   });
 }
@@ -384,7 +383,7 @@ export function useUpdateTemplate(api: ScopedApi | null, mailboxId: string) {
       name?: string;
       subject?: string;
       body?: string;
-    }): Promise<TemplateRow> => requireApi(api).updateTemplate(mailboxId, input),
+    }): Promise<TemplateRow> => (await requireApi(api).updateTemplate(mailboxId, input)).template,
     onSuccess: () => client.invalidateQueries({ queryKey: ["templates"] }),
   });
 }
@@ -392,7 +391,7 @@ export function useUpdateTemplate(api: ScopedApi | null, mailboxId: string) {
 export function useDeleteTemplate(api: ScopedApi | null, mailboxId: string) {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: async (templateId: string): Promise<{ ok: boolean }> =>
+    mutationFn: async (templateId: string): Promise<{ deleted: boolean }> =>
       requireApi(api).deleteTemplate(mailboxId, templateId),
     onSuccess: () => client.invalidateQueries({ queryKey: ["templates"] }),
   });
@@ -413,7 +412,7 @@ export function useCreateSavedSearch(api: ScopedApi | null, mailboxId: string) {
   const client = useQueryClient();
   return useMutation({
     mutationFn: async (input: { name: string; query: string }): Promise<SavedSearchRow> =>
-      requireApi(api).createSavedSearch(mailboxId, input),
+      (await requireApi(api).createSavedSearch(mailboxId, input)).search,
     onSuccess: () => client.invalidateQueries({ queryKey: ["saved-searches"] }),
   });
 }
@@ -422,7 +421,7 @@ export function useUpdateSavedSearch(api: ScopedApi | null, mailboxId: string) {
   const client = useQueryClient();
   return useMutation({
     mutationFn: async (input: { searchId: string; name?: string; query?: string }): Promise<SavedSearchRow> =>
-      requireApi(api).updateSavedSearch(mailboxId, input),
+      (await requireApi(api).updateSavedSearch(mailboxId, input)).search,
     onSuccess: () => client.invalidateQueries({ queryKey: ["saved-searches"] }),
   });
 }
@@ -430,7 +429,7 @@ export function useUpdateSavedSearch(api: ScopedApi | null, mailboxId: string) {
 export function useDeleteSavedSearch(api: ScopedApi | null, mailboxId: string) {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: async (searchId: string): Promise<{ ok: boolean }> =>
+    mutationFn: async (searchId: string): Promise<{ deleted: boolean }> =>
       requireApi(api).deleteSavedSearch(mailboxId, searchId),
     onSuccess: () => client.invalidateQueries({ queryKey: ["saved-searches"] }),
   });
@@ -494,7 +493,7 @@ export function useRestoreBatch(api: ScopedApi | null, mailboxId: string) {
 export function useEmptyTrash(api: ScopedApi | null, mailboxId: string) {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: async (): Promise<{ purged: number }> => requireApi(api).emptyTrash(mailboxId),
+    mutationFn: async (): Promise<{ deleted: number }> => requireApi(api).emptyTrash(mailboxId),
     onSuccess: () => invalidateMailbox(client, api, mailboxId),
   });
 }
@@ -518,16 +517,7 @@ export function useScheduleSend(api: ScopedApi | null, mailboxId: string) {
       subject: string;
       body: string;
       sendAt: string;
-    }): Promise<ScheduledSend> => requireApi(api).scheduleSend(mailboxId, input),
-    onSuccess: () => client.invalidateQueries({ queryKey: ["scheduled-sends"] }),
-  });
-}
-
-export function useCancelScheduledSend(api: ScopedApi | null, mailboxId: string) {
-  const client = useQueryClient();
-  return useMutation({
-    mutationFn: async (scheduledSendId: string) =>
-      requireApi(api).cancelScheduledSend(mailboxId, scheduledSendId),
+    }): Promise<{ id: string; status: string; sendAt: string }> => requireApi(api).scheduleSend(mailboxId, input),
     onSuccess: () => client.invalidateQueries({ queryKey: ["scheduled-sends"] }),
   });
 }
@@ -541,37 +531,3 @@ export function useRetryScheduledSend(api: ScopedApi | null, mailboxId: string) 
   });
 }
 
-/**
- * The remote images of one message, fetched through the scoped get_image
- * tool and keyed by URL so the document builder can inline exactly the
- * ones that loaded. Sequential: an image is small, and ordering keeps the
- * deployment's per-request accounting simple. A failure only drops that
- * image back to its text placeholder.
- */
-export function useEmailImages(api: ScopedApi | null, mailboxId: string, bodyHtml: string | null | undefined) {
-  const urls = useMemo(() => extractImageUrls(bodyHtml ?? "").slice(0, MAX_BODY_IMAGES), [bodyHtml]);
-  return useQuery({
-    queryKey: ["email-images", api?.session.baseUrl ?? "", mailboxId, urls],
-    enabled: Boolean(api && mailboxId && urls.length > 0),
-    staleTime: 5 * 60_000,
-    gcTime: 5 * 60_000,
-    queryFn: async () => {
-      const scoped = requireApi(api);
-      const images = new Map<string, string>();
-      let failed = 0;
-      for (const url of urls) {
-        try {
-          const result = await scoped.getImage(mailboxId, url);
-          if (result.dataBase64 && result.contentType) {
-            images.set(url, `data:${result.contentType};base64,${result.dataBase64}`);
-          } else {
-            failed += 1;
-          }
-        } catch {
-          failed += 1;
-        }
-      }
-      return { images, failed, total: urls.length };
-    },
-  });
-}

@@ -59,16 +59,11 @@ export function sendLaterPresets(now: Date): { label: string; sendAt: string }[]
  * one-click marker). Null means the action is not offered; the server still
  * refuses at call time either way, so this only drives the menu.
  */
-export function oneClickUnsubscribeTarget(email: {
-  list_unsubscribe?: string | null;
-  list_unsubscribe_post?: string | null;
-}): string | null {
-  const post = email.list_unsubscribe_post ?? "";
-  if (!/^list-unsubscribe=one-click$/i.test(post.trim())) return null;
-  const header = email.list_unsubscribe ?? "";
-  for (const match of header.matchAll(/<([^>]+)>/g)) {
-    const candidate = (match[1] ?? "").trim();
-    if (/^https:\/\//i.test(candidate)) return candidate;
-  }
-  return null;
+/**
+ * Whether to offer Unsubscribe: any received message. The server reads the
+ * stored List-Unsubscribe headers itself and answers a readable error when
+ * the message carries no one-click link, so the client needs no header data.
+ */
+export function canOfferUnsubscribe(email: { status?: string }): boolean {
+  return email.status !== "draft" && email.status !== "sent" && email.status !== "queued";
 }

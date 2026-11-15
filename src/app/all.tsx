@@ -18,7 +18,7 @@ import { Loading } from "@/components/loading";
 import { ThemedText } from "@/components/themed-text";
 import { Spacing } from "@/constants/theme";
 import { useTheme } from "@/hooks/use-theme";
-import type { EmailSummary } from "@/lib/api";
+import { folderOf, type EmailSummary } from "@/lib/api";
 import { folderDisplayName, SYSTEM_FOLDERS } from "@/lib/format";
 import { useAllEmails } from "@/lib/queries";
 import { useSession } from "@/lib/session";
@@ -55,9 +55,9 @@ export default function AllAccountsScreen() {
   }
 
   const rowLabel = (email: EmailSummary): string => {
-    const account = accountName(email.mailboxId);
+    const account = accountName(email.mailbox_id);
     if (folder !== "all") return account;
-    const where = email.folder_name ?? (email.folder_id ? folderDisplayName(email.folder_id) : null);
+    const where = folderDisplayName(folderOf(email));
     return where ? `${where} · ${account}` : account;
   };
 
@@ -113,7 +113,7 @@ export default function AllAccountsScreen() {
       ) : null}
       <FlatList
         data={emails}
-        keyExtractor={(item) => `${item.mailboxId ?? "mailbox"}::${item.id}`}
+        keyExtractor={(item) => `${item.mailbox_id ?? "mailbox"}::${item.id}`}
         renderItem={({ item }) => (
           <EmailRow
             email={item}
@@ -121,7 +121,7 @@ export default function AllAccountsScreen() {
             onPress={() =>
               router.push({
                 pathname: "/m/[mailboxId]/e/[emailId]",
-                params: { mailboxId: item.mailboxId ?? "", emailId: item.id },
+                params: { mailboxId: item.mailbox_id ?? "", emailId: item.id },
               })
             }
           />

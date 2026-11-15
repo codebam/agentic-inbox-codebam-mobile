@@ -11,33 +11,25 @@ import { Spacing } from "@/constants/theme";
 import { useTheme } from "@/hooks/use-theme";
 import type { ScheduledSend } from "@/lib/api";
 import { formatFullDate } from "@/lib/format";
-import { useCancelScheduledSend, useRetryScheduledSend, useScheduledSends } from "@/lib/queries";
+import { useRetryScheduledSend, useScheduledSends } from "@/lib/queries";
 import { useSession } from "@/lib/session";
 
 const STATUS_COPY: Record<string, string> = {
   pending: "Pending",
+  sending: "Sending",
   sent: "Sent",
   failed: "Failed",
-  cancelled: "Cancelled",
 };
 
-function recipientText(payload: ScheduledSend["payload"]): string {
-  const to = payload?.to;
-  if (!to) return "(unknown recipient)";
-  return Array.isArray(to) ? to.join(", ") : to;
-}
-
-/** The mailbox's scheduled sends: watch the queue, cancel pending, retry failed. */
+/** The mailbox's scheduled sends: watch the queue, retry failed sends. */
 export default function ScheduledScreen() {
   const { mailboxId } = useLocalSearchParams<{ mailboxId: string }>();
   const { api, session, ready } = useSession();
   const theme = useTheme();
   const mailbox = mailboxId ?? "";
   const query = useScheduledSends(api, mailbox);
-  const cancelSend = useCancelScheduledSend(api, mailbox);
   const retrySend = useRetryScheduledSend(api, mailbox);
 
-  const [confirmCancel, setConfirmCancel] = useState<ScheduledSend | null>(null);
   const [confirmRetry, setConfirmRetry] = useState<ScheduledSend | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -96,37 +88,18 @@ export default function ScheduledScreen() {
           <View style={[styles.card, { borderBottomColor: theme.border }]}>
             <View style={styles.cardHeader}>
               <ThemedText type="smallBold" style={styles.subject} numberOfLines={1}>
-                {item.payload?.subject?.trim() || "(no subject)"}
+                {item.subject?.trim() || "(no subject)"}
               </ThemedText>
               <ThemedText type="small" style={{ color: statusColor(item.status) }}>
                 {STATUS_COPY[item.status] ?? item.status}
               </ThemedText>
             </View>
             <ThemedText type="small" themeColor="textSecondary" numberOfLines={1}>
-              To {recipientText(item.payload)}
+              To {item.to?.trim() || "(unknown recipient)"}
             </ThemedText>
             <ThemedText type="small" themeColor="textSecondary">
-              {item.status === "sent" && item.sent_at
-                ? `Sent ${formatFullDate(item.sent_at)}`
-                : `Due ${formatFullDate(item.send_at)}`}
+              {item.sendAt ? `Due ${formatFullDate(item.sendAt)}` : "No send time"}
             </ThemedText>
-            {item.last_error ? (
-              <ThemedText type="small" style={{ color: theme.danger }} numberOfLines={2}>
-                {item.last_error}
-              </ThemedText>
-            ) : null}
-            {item.status === "pending" ? (
-              <Pressable
-                onPress={() => setConfirmCancel(item)}
-                style={({ pressed }) => [
-                  styles.rowButton,
-                  { backgroundColor: theme.backgroundElement, opacity: pressed ? 0.7 : 1 },
-                ]}>
-                <ThemedText type="small" style={{ color: theme.danger }}>
-                  Cancel send
-                </ThemedText>
-              </Pressable>
-            ) : null}
             {item.status === "failed" ? (
               <Pressable
                 onPress={() => setConfirmRetry(item)}
@@ -143,7 +116,7 @@ export default function ScheduledScreen() {
         )}
         ListEmptyComponent={
           query.isLoading ? (
-            <Loading label="Loading the queue…" />
+            <Loading />
           ) : (
             <EmptyState
               icon="time-outline"
@@ -156,39 +129,11 @@ export default function ScheduledScreen() {
       />
 
       <ConfirmDialog
-        visible={confirmCancel !== null}
-        title="Cancel this send?"
-        message={
-          confirmCancel
-            ? `“${confirmCancel.payload?.subject?.trim() || "(no subject)"}” will not be sent. The row stays for the record.`
-            : undefined
-        }
-        confirmLabel="Cancel send"
-        destructive
-        busy={cancelSend.isPending}
-        onCancel={() => setConfirmCancel(null)}
-        onConfirm={() => {
-          const target = confirmCancel;
-          if (!target) return;
-          cancelSend.mutate(target.id, {
-            onSuccess: () => {
-              setConfirmCancel(null);
-              setNotice("The send was cancelled.");
-            },
-            onError: (err) => {
-              setConfirmCancel(null);
-              fail(err);
-            },
-          });
-        }}
-      />
-
-      <ConfirmDialog
         visible={confirmRetry !== null}
         title="Retry this send?"
         message={
           confirmRetry
-            ? `“${confirmRetry.payload?.subject?.trim() || "(no subject)"}” is re-armed and goes out as soon as the mailbox processes it.`
+            ? `“${confirmRetry.subject?.trim() || "(no subject)"}” is re-armed and goes out as soon as the mailbox processes it.`
             : undefined
         }
         confirmLabel="Retry"

@@ -228,7 +228,7 @@ export default function FolderScreen() {
               }
               router.push({
                 pathname: "/m/[mailboxId]/e/[emailId]",
-                params: { mailboxId, emailId: item.id },
+                params: { mailboxId, emailId: item.id, folder },
               });
             }}
             onLongPress={() => (selecting ? toggle(item.id) : setSelection(new Set([item.id])))}
@@ -350,9 +350,9 @@ export default function FolderScreen() {
           emptyTrash.mutate(undefined, {
             onSuccess: (result) => {
               setNotice(
-                result.purged === 1
+                result.deleted === 1
                   ? "Emptied 1 message from Trash."
-                  : `Emptied ${result.purged} messages from Trash.`,
+                  : `Emptied ${result.deleted} messages from Trash.`,
               );
             },
             onError: (error) =>

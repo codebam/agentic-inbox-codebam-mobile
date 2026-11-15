@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { moveTargets, oneClickUnsubscribeTarget, sendLaterPresets, snoozePresets } from "@/lib/manage";
+import { canOfferUnsubscribe, moveTargets, sendLaterPresets, snoozePresets } from "@/lib/manage";
 
 describe("moveTargets", () => {
   it("drops the folder the message is in", () => {
@@ -53,33 +53,12 @@ describe("sendLaterPresets", () => {
   });
 });
 
-describe("oneClickUnsubscribeTarget", () => {
-  it("takes the https target when the one-click marker is present", () => {
-    expect(
-      oneClickUnsubscribeTarget({
-        list_unsubscribe: "<mailto:u@x.test>, <https://x.test/unsub?t=1>",
-        list_unsubscribe_post: "List-Unsubscribe=One-Click",
-      }),
-    ).toBe("https://x.test/unsub?t=1");
-  });
-
-  it("is null without the marker, without an https target, or with neither", () => {
-    expect(oneClickUnsubscribeTarget({ list_unsubscribe: "<https://x.test/u>" })).toBeNull();
-    expect(
-      oneClickUnsubscribeTarget({
-        list_unsubscribe: "<mailto:u@x.test>",
-        list_unsubscribe_post: "List-Unsubscribe=One-Click",
-      }),
-    ).toBeNull();
-    expect(oneClickUnsubscribeTarget({})).toBeNull();
-  });
-
-  it("ignores an http-only target", () => {
-    expect(
-      oneClickUnsubscribeTarget({
-        list_unsubscribe: "<http://x.test/u>",
-        list_unsubscribe_post: "List-Unsubscribe=One-Click",
-      }),
-    ).toBeNull();
+describe("canOfferUnsubscribe", () => {
+  it("offers unsubscribe for received mail, not for outbound", () => {
+    expect(canOfferUnsubscribe({ status: "received" })).toBe(true);
+    expect(canOfferUnsubscribe({ status: "archived" })).toBe(true);
+    expect(canOfferUnsubscribe({ status: "draft" })).toBe(false);
+    expect(canOfferUnsubscribe({ status: "sent" })).toBe(false);
+    expect(canOfferUnsubscribe({ status: "queued" })).toBe(false);
   });
 });

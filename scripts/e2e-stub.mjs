@@ -46,25 +46,31 @@ const harness = await startHarness({
           if (!url.includes("/api/v1/scoped/")) return original(input, init);
           const tool = url.split("/api/v1/scoped/")[1];
           const ok = (payload) =>
-            new Response(JSON.stringify({ ok: true, result: payload }), {
+            new Response(JSON.stringify(payload), {
               status: 200,
               headers: { "Content-Type": "application/json" },
             });
-          if (tool === "list_mailboxes") return ok([{ id: config.mailbox, email: config.mailbox }]);
+          if (tool === "list_mailboxes") return ok([{ id: config.mailbox, address: config.mailbox }]);
           if (tool === "list_emails")
-            return ok([
-              {
-                id: "m1",
-                subject: config.subject,
-                sender: "Eve <eve@evil.test>",
-                date: new Date().toISOString(),
-                read: false,
-                folder_id: "inbox",
-                folder_name: "Inbox",
-                thread_id: "t1",
-                snippet: "Hello there",
-              },
-            ]);
+            return ok({
+              emails: [
+                {
+                  id: "m1",
+                  subject: config.subject,
+                  sender: "Eve <eve@evil.test>",
+                  recipient: config.mailbox,
+                  date: new Date().toISOString(),
+                  read: false,
+                  starred: false,
+                  folder_id: null,
+                  status: "received",
+                  category: null,
+                  thread_id: "t1",
+                  snippet: "Hello there",
+                },
+              ],
+              totalCount: 1,
+            });
           if (tool === "get_email")
             return ok({
               id: "m1",
@@ -73,11 +79,15 @@ const harness = await startHarness({
               recipient: config.mailbox,
               cc: null,
               date: new Date().toISOString(),
-              folder_id: "inbox",
-              folder_name: "Inbox",
+              read: false,
+              starred: false,
+              folder_id: null,
+              status: "received",
+              category: null,
               thread_id: "t1",
-              body: config.body,
-              body_text: "Hello from Eve",
+              snippet: "Hello there",
+              bodyHtml: config.body,
+              bodyText: "Hello from Eve",
               attachments: [],
             });
           return ok({});

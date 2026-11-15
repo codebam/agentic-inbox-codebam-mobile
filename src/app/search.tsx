@@ -219,13 +219,13 @@ export default function SearchScreen() {
       {submitted ? (
         <FlatList
           data={rows}
-          keyExtractor={(item) => `${item.mailboxId ?? ""}:${item.id}`}
+          keyExtractor={(item) => `${item.mailbox_id ?? ""}:${item.id}`}
           renderItem={({ item }) => (
             <EmailRow
               email={item}
               showFolder
               onPress={() => {
-                const target = item.mailboxId ?? targetMailbox;
+                const target = item.mailbox_id ?? targetMailbox;
                 if (!target) return;
                 router.push({
                   pathname: "/m/[mailboxId]/e/[emailId]",

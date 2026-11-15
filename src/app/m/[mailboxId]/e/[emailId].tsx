@@ -14,16 +14,15 @@ import { ThemedText } from "@/components/themed-text";
 import { Spacing } from "@/constants/theme";
 import { useColorScheme } from "@/hooks/use-color-scheme";
 import { useTheme } from "@/hooks/use-theme";
-import { ApiError, type EmailFull, type Label } from "@/lib/api";
+import { ApiError, folderOf, type EmailFull, type Label } from "@/lib/api";
 import { buildEmailDocument, htmlToPlainText, plainTextToHtml } from "@/lib/email-html";
 import { folderDisplayName, formatFullDate, replySubject, senderAddress, senderName, truncate } from "@/lib/format";
-import { moveTargets, oneClickUnsubscribeTarget, snoozePresets } from "@/lib/manage";
+import { canOfferUnsubscribe, moveTargets, snoozePresets } from "@/lib/manage";
 import {
   useAddLabel,
   useDeleteEmail,
   useDiscardDraft,
   useEmail,
-  useEmailImages,
   useLabels,
   useMarkEmailRead,
   useMoveEmail,
@@ -45,7 +44,7 @@ type IconName = React.ComponentProps<typeof Ionicons>["name"];
 let warnedMissingManageScope = false;
 
 export default function EmailScreen() {
-  const { mailboxId, emailId } = useLocalSearchParams<{ mailboxId: string; emailId: string }>();
+  const { mailboxId, emailId, folder } = useLocalSearchParams<{ mailboxId: string; emailId: string; folder?: string }>();
   const mailbox = mailboxId ?? "";
   const { api, session, ready } = useSession();
   const theme = useTheme();
@@ -81,7 +80,6 @@ export default function EmailScreen() {
   const [notice, setNotice] = useState<string | null>(null);
 
   const email = emailQuery.data;
-  const images = useEmailImages(api, mailbox, email?.body ?? null);
   const labels = useLabels(api, mailbox, labelSheet);
 
   // Opening a message marks it read, once per message and never for a draft.
@@ -90,7 +88,7 @@ export default function EmailScreen() {
   const autoReadFor = useRef<string | null>(null);
   useEffect(() => {
     if (!email || email.read) return;
-    if (email.folder_id === "draft") return;
+    if (folderOf(email) === "draft") return;
     if (autoReadFor.current === email.id) return;
     autoReadFor.current = email.id;
     markRead.mutate(
@@ -108,19 +106,19 @@ export default function EmailScreen() {
 
   const bodyHtml = useMemo(() => {
     if (!email) return "";
-    const html = email.body && email.body.trim() ? email.body : plainTextToHtml(email.body_text ?? "");
+    const html = email.bodyHtml && email.bodyHtml.trim() ? email.bodyHtml : plainTextToHtml(email.bodyText ?? "");
     return buildEmailDocument({
       subject: email.subject,
       sender: email.sender,
       recipient: email.recipient,
       cc: email.cc,
       date: formatFullDate(email.date),
-      folderName: email.folder_name ?? folderDisplayName(email.folder_id ?? ""),
+      folderName: folderDisplayName(folder ?? folderOf(email)),
       bodyHtml: html,
       scheme,
-      images: images.data?.images ?? null,
+      images: null,
     });
-  }, [email, images.data, scheme]);
+  }, [email, folder, scheme]);
 
   if (!ready) return <Loading />;
   if (!session || !api) return <Redirect href="/connect" />;
@@ -151,7 +149,7 @@ export default function EmailScreen() {
         draftId: message.id,
         to: message.recipient ?? "",
         subject: message.subject ?? "",
-        body: message.body_text ?? "",
+        body: message.bodyText ?? "",
       },
     });
   };
@@ -189,11 +187,11 @@ export default function EmailScreen() {
     setActionError(null);
     setSheet({
       title: "Move to",
-      actions: moveTargets(email.folder_id ?? "inbox").map((folder) => ({
-        label: folder.name,
+      actions: moveTargets(folder ?? folderOf(email)).map((target) => ({
+        label: target.name,
         onPress: () => {
           setSheet(null);
-          move.mutate({ emailId: email.id, folderId: folder.id }, { onSuccess: goBack, onError: fail });
+          move.mutate({ emailId: email.id, folderId: target.id }, { onSuccess: goBack, onError: fail });
         },
       })),
     });
@@ -225,7 +223,7 @@ export default function EmailScreen() {
         openLabels();
       },
     });
-    if (oneClickUnsubscribeTarget(email)) {
+    if (canOfferUnsubscribe(email)) {
       actions.push({
         label: "Unsubscribe from this sender",
         onPress: () => {
@@ -285,8 +283,8 @@ export default function EmailScreen() {
     setLabelSheet(true);
   };
 
-  const isDraft = email?.folder_id === "draft";
-  const inTrash = email?.folder_id === "trash";
+  const isDraft = email ? folderOf(email) === "draft" : false;
+  const inTrash = email ? folderOf(email) === "trash" : false;
   const emailLabels = email && labelOverride?.emailId === email.id ? labelOverride.labels : [];
   const busy =
     markRead.isPending ||
@@ -353,7 +351,7 @@ export default function EmailScreen() {
               <ManageButton icon="file-tray-full-outline" label="Move" onPress={openMove} />
               {inTrash ? (
                 <ManageButton icon="arrow-undo-outline" label="Restore" onPress={restoreNow} />
-              ) : email.folder_id === "snoozed" ? (
+              ) : (folder ?? (email ? folderOf(email) : "")) === "snoozed" ? (
                 <ManageButton icon="sunny-outline" label="Wake" onPress={wakeNow} />
               ) : (
                 <ManageButton icon="time-outline" label="Snooze" onPress={openSnooze} />
@@ -415,16 +413,6 @@ export default function EmailScreen() {
             </Pressable>
           </View>
 
-          {!plainText && images.isLoading ? (
-            <ThemedText type="small" themeColor="textSecondary" style={styles.imageNote}>
-              Loading images…
-            </ThemedText>
-          ) : null}
-          {!plainText && !images.isLoading && (images.data?.failed ?? 0) > 0 ? (
-            <ThemedText type="small" themeColor="textSecondary" style={styles.imageNote}>
-              {images.data?.failed} of {images.data?.total} images did not load.
-            </ThemedText>
-          ) : null}
 
           {plainText ? (
             <ScrollView style={styles.bodyWrap} contentContainerStyle={styles.plainContent}>
@@ -433,7 +421,7 @@ export default function EmailScreen() {
                 {senderName(email.sender)} · {formatFullDate(email.date)}
               </ThemedText>
               <ThemedText style={styles.plainBody} selectable>
-                {email.body_text?.trim() || htmlToPlainText(email.body ?? "") || "(no content)"}
+                {email.bodyText?.trim() || htmlToPlainText(email.bodyHtml ?? "") || "(no content)"}
               </ThemedText>
             </ScrollView>
           ) : (
