@@ -1,54 +1,32 @@
 /**
- * Client-side parsing of agentic-inbox access tokens.
+ * Client-side parsing of Mailflare API keys.
  *
- * Mirrors `shared/access-tokens.ts` in the agentic-inbox repo. Two wire
- * shapes exist, told apart by their prefixes:
+ * One wire shape now: an `ep_` key minted in the app under Settings → API
+ * keys, with "Allow JMAP" ticked. The key authenticates the JMAP endpoint as
+ * its user, so it reaches every mailbox that user can read — there is no
+ * per-mailbox key kind to tell apart any more (the fork's `ain1_`/`ain2_`
+ * tokens were scoped-token rows that stock Mailflare does not have).
  *
- *     ain1_<hex of the mailbox id's UTF-8 bytes>_<43-char base64url secret>
- *         one mailbox — minted in a mailbox's Settings → Access tokens
- *     ain2_<43-char base64url secret>
- *         every mailbox — minted in Global Settings → App access tokens
- *
- * The two parsers are deliberately disjoint: a near miss is refused, never
- * guessed at.
+ * App passwords for IMAP/SMTP use the same `ep_` prefix and are accepted here
+ * too, because JMAP's Basic authentication takes the same secret.
  */
 
-export type TokenKind = "mailbox" | "app";
+export type TokenKind = "api";
 
 export interface ParsedToken {
   kind: TokenKind;
-  /** The mailbox the key is bound to; null for a global (app) key. */
-  mailboxId: string | null;
+  /** Always null: a key is per user, not per mailbox. */
+  mailboxId: null;
 }
 
-const MAILBOX_TOKEN_PATTERN = /^ain1_((?:[0-9a-f]{2})+)_([A-Za-z0-9_-]{43})$/;
-const APP_TOKEN_PATTERN = /^ain2_([A-Za-z0-9_-]{43})$/;
+/** `ep_` followed by the secret. Deliberately loose: the server is the judge. */
+const API_KEY_PATTERN = /^ep_[A-Za-z0-9_-]{8,}$/;
 
-/**
- * Decode lowercase hex back to a string, or null when the bytes are not
- * valid UTF-8 — the same fatal-decoder semantics the worker's hexToUtf8
- * uses, so a key with a mangled mailbox segment is refused on both ends.
- */
-export function hexToUtf8(hex: string): string | null {
-  try {
-    return decodeURIComponent(hex.replace(/../g, "%$&"));
-  } catch {
-    return null;
-  }
-}
-
-/** Parse a pasted key into its kind and mailbox, or null when it is neither shape. */
+/** Parse a pasted key, or null when it is not the shape Mailflare issues. */
 export function parseToken(raw: string): ParsedToken | null {
   const token = raw.trim();
-  const mailbox = MAILBOX_TOKEN_PATTERN.exec(token);
-  if (mailbox) {
-    const hex = mailbox[1];
-    if (hex === undefined) return null;
-    const mailboxId = hexToUtf8(hex);
-    return mailboxId === null ? null : { kind: "mailbox", mailboxId };
-  }
-  if (APP_TOKEN_PATTERN.test(token)) return { kind: "app", mailboxId: null };
-  return null;
+  if (!API_KEY_PATTERN.test(token)) return null;
+  return { kind: "api", mailboxId: null };
 }
 
 /** A short, safe display form of a key: prefix + enough to recognize it, never the secret. */

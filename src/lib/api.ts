@@ -1,43 +1,55 @@
 /**
- * The mailflare-codebam scoped automation API client.
+ * The Mailflare JMAP client behind every screen.
  *
- * Every call is `POST {baseUrl}/api/v1/scoped/<tool>` with a bearer key and
- * the tool's JSON result comes back directly (errors as `{ error }`).
- * Two key kinds are accepted by the surface, and the body differs:
+ * The app used to call mailflare-codebam's `/api/v1/scoped/<tool>` facade,
+ * which only exists in the fork. This client speaks JMAP (RFC 8620/8621) to
+ * the server's `/jmap` endpoint instead, so it works against stock Mailflare:
  *
- *  - a mailbox key (ain1_) is bound to one mailbox: calls must NEVER carry
- *    `mailboxId` (the surface answers 400 when they do);
- *  - an app key (ain2_) reaches every mailbox: every mailbox-scoped call
- *    MUST carry `mailboxId` (the surface answers 400 when it doesn't), and
- *    only it may call the all-mailbox reads.
+ *   GET  /.well-known/jmap   discovery -> the Session resource
+ *   POST {apiUrl}            batched method calls (Email/query, Email/set...)
  *
- * This client encodes that contract so no caller can get it wrong. The
- * types mirror the mailflare-codebam facade's wire shapes.
+ * Mailflare exposes one JMAP account per key (the key's user) and models its
+ * mailboxes as top-level JMAP mailboxes with system/user folders as children;
+ * `encodeMailboxId`/`decodeMailboxId` in ./jmap pin that encoding down.
+ *
+ * The exported names and shapes are unchanged from the facade era so the
+ * screens and react-query hooks keep working. Features the fork added and the
+ * server does not implement over JMAP (labels, templates, saved searches,
+ * muted threads, sender policy, unsubscribe, snooze, scheduled sends, thread
+ * summaries) throw a clear `ApiError` with status 501 instead of pretending.
  */
 
 import { plainTextToHtml } from "./email-html";
+import {
+  decodeMailboxId,
+  encodeMailboxId,
+  JmapClient,
+  JmapError,
+  normalizeServerUrl,
+  type SystemRole,
+} from "./jmap";
 import { parseToken, type TokenKind } from "./token";
 
 export const DEFAULT_SERVER_URL = "https://email.codebam.ca";
-
-const REQUEST_TIMEOUT_MS = 30_000;
 
 export interface Session {
   baseUrl: string;
   token: string;
   kind: TokenKind;
-  /** Bound mailbox for a scoped key; null for a global key. */
+  /** Always null now: one key reaches every mailbox the user can read. */
   mailboxId: string | null;
 }
 
 /** Normalize a server URL: trim, drop trailing slashes, default the scheme to https. */
 export function normalizeBaseUrl(raw: string): string {
-  const trimmed = raw.trim().replace(/\/+$/, "");
-  if (!trimmed) return DEFAULT_SERVER_URL;
-  return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  try {
+    return normalizeServerUrl(raw);
+  } catch {
+    return DEFAULT_SERVER_URL;
+  }
 }
 
-/** Build a session from a pasted key, or null when the key is not either wire shape. */
+/** Build a session from a pasted key, or null when the key is not one of ours. */
 export function createSession(baseUrl: string, token: string): Session | null {
   const trimmed = token.trim();
   const parsed = parseToken(trimmed);
@@ -281,427 +293,711 @@ export function folderOf(row: Pick<EmailSummary, "folder_id" | "status">): strin
   }
 }
 
-function cleanFilters(filters: SearchFilters): Record<string, unknown> {
+function cleanFilters(filters: SearchFilters): SearchFilters {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(filters)) {
     if (value === undefined || value === null || value === "") continue;
     out[key] = value;
   }
-  return out;
+  return out as SearchFilters;
+}
+
+// ── JMAP shapes ─────────────────────────────────────────────────────────
+
+interface JmapAddress {
+  name?: string | null;
+  email?: string | null;
+}
+
+interface JmapPart {
+  partId?: string;
+  blobId?: string;
+  size?: number;
+  type?: string;
+  name?: string | null;
+  disposition?: string | null;
+}
+
+interface JmapEmail {
+  id: string;
+  threadId?: string | null;
+  mailboxIds?: Record<string, boolean>;
+  keywords?: Record<string, boolean>;
+  size?: number;
+  subject?: string | null;
+  sender?: JmapAddress[] | null;
+  from?: JmapAddress[] | null;
+  to?: JmapAddress[] | null;
+  cc?: JmapAddress[] | null;
+  bcc?: JmapAddress[] | null;
+  replyTo?: JmapAddress[] | null;
+  preview?: string | null;
+  receivedAt?: string | null;
+  sentAt?: string | null;
+  messageId?: string[] | null;
+  inReplyTo?: string[] | null;
+  references?: string[] | null;
+  hasAttachment?: boolean;
+  textBody?: JmapPart[] | null;
+  htmlBody?: JmapPart[] | null;
+  bodyValues?: Record<string, { value?: string | null }> | null;
+  attachments?: JmapPart[] | null;
+}
+
+interface JmapMailbox {
+  id: string;
+  name?: string | null;
+  parentId?: string | null;
+  role?: string | null;
+}
+
+const SUMMARY_PROPERTIES = [
+  "id", "threadId", "mailboxIds", "keywords", "size", "subject", "sender", "from", "to",
+  "preview", "receivedAt", "sentAt", "hasAttachment",
+];
+
+const FULL_PROPERTIES = [
+  ...SUMMARY_PROPERTIES, "cc", "bcc", "replyTo", "messageId", "inReplyTo", "references",
+  "textBody", "htmlBody", "bodyValues", "attachments",
+];
+
+/** The most objects one Email/set may carry (the server's maxObjectsInSet). */
+const SET_BATCH = 100;
+
+function formatAddress(address: JmapAddress | undefined): string {
+  if (!address) return "";
+  const email = typeof address.email === "string" ? address.email : "";
+  const name = typeof address.name === "string" ? address.name.trim() : "";
+  if (!email) return name;
+  return name ? `${name} <${email}>` : email;
+}
+
+function formatAddressList(list: JmapAddress[] | null | undefined): string {
+  return Array.isArray(list) ? list.map((item) => formatAddress(item)).filter(Boolean).join(", ") : "";
+}
+
+/** Parse a comma-separated address header into JMAP address objects. */
+function parseAddressList(value: string | null | undefined): JmapAddress[] {
+  if (!value) return [];
+  return value
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => {
+      const match = /^(.*?)\s*<([^>]+)>$/.exec(part);
+      if (match) return { name: match[1]?.trim() ?? "", email: (match[2] ?? "").trim() };
+      return { email: part };
+    });
+}
+
+function roleToStatus(role: SystemRole | null): string {
+  switch (role) {
+    case "sent": return "sent";
+    case "drafts": return "draft";
+    case "archive": return "archived";
+    case "junk": return "spam";
+    case "trash": return "trash";
+    default: return "received";
+  }
+}
+
+function unwrap<T>(promise: Promise<T>): Promise<T> {
+  return promise.catch((error: unknown) => {
+    if (error instanceof ApiError) throw error;
+    if (error instanceof JmapError) throw new ApiError(error.message, error.isAuthError ? 401 : error.status || 0);
+    throw error;
+  });
 }
 
 export class ScopedApi {
-  constructor(readonly session: Session) {}
+  private readonly jmap: JmapClient;
+  private mailboxesPromise: Promise<JmapMailbox[]> | null = null;
+
+  constructor(readonly session: Session) {
+    this.jmap = new JmapClient(session.baseUrl, session.token);
+  }
 
   get host(): string {
-    try {
-      return new URL(this.session.baseUrl).host;
-    } catch {
-      return this.session.baseUrl;
-    }
+    return this.jmap.host;
   }
 
-  /**
-   * The body of one mailbox-scoped call. An app key names the mailbox per
-   * call; a scoped key must not name one. Programming errors are thrown
-   * before any request goes out rather than surfacing as a server 400.
-   */
-  private mailboxBody(mailboxId: string | null, args: Record<string, unknown>): Record<string, unknown> {
-    if (this.session.kind === "app") {
-      if (!mailboxId) throw new Error("This key reaches every mailbox; a mailbox must be named for this call.");
-      return { ...args, mailboxId };
-    }
-    if (mailboxId && mailboxId !== this.session.mailboxId) {
-      throw new Error("This key is scoped to a single mailbox.");
-    }
-    return { ...args };
+  private run<T>(operation: () => Promise<T>): Promise<T> {
+    return unwrap(operation());
   }
 
-  private assertAppKey(tool: string): void {
-    if (this.session.kind !== "app") {
-      throw new Error(`Only a global key can call ${tool}.`);
-    }
-  }
-
-  private async call<T>(tool: string, args: Record<string, unknown>): Promise<T> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-    let response: Response;
-    try {
-      response = await fetch(`${this.session.baseUrl}/api/v1/scoped/${tool}`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${this.session.token}`,
-        },
-        body: JSON.stringify(args),
-        signal: controller.signal,
+  /** Every JMAP mailbox (address mailboxes and their folder children), cached. */
+  private mailboxes(): Promise<JmapMailbox[]> {
+    if (!this.mailboxesPromise) {
+      this.mailboxesPromise = (async () => {
+        const session = await this.jmap.session();
+        const response = await this.jmap.call([
+          ["Mailbox/get", { accountId: session.accountId, ids: null }, "m"],
+        ]);
+        const result = JmapClient.result(response, "m");
+        return Array.isArray(result.list) ? (result.list as JmapMailbox[]) : [];
+      })().catch((error: unknown) => {
+        this.mailboxesPromise = null;
+        throw error;
       });
-    } catch (error) {
-      const aborted = error instanceof Error && error.name === "AbortError";
-      throw new ApiError(
-        aborted
-          ? `The request to ${this.host} timed out.`
-          : `Couldn't reach ${this.host}. Check the server URL and your connection.`,
-        0,
-      );
-    } finally {
-      clearTimeout(timer);
     }
-
-    let payload: unknown = null;
-    try {
-      payload = await response.json();
-    } catch {
-      payload = null;
-    }
-    const record = payload !== null && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
-
-    if (!response.ok) {
-      const message = typeof record.error === "string" ? record.error : `Request failed (${response.status})`;
-      throw new ApiError(message, response.status);
-    }
-    if (typeof record.error === "string" && record.error) {
-      throw new ApiError(record.error, response.status);
-    }
-    return record as T;
+    return this.mailboxesPromise;
   }
 
-  // ── mailbox-scoped tools ─────────────────────────────────────────────
+  /** The address-level mailboxes: one per Mailflare mailbox, parentId null. */
+  async listMailboxes(): Promise<Mailbox[]> {
+    return this.run(async () => {
+      const mailboxes = await this.mailboxes();
+      return mailboxes
+        .filter((mailbox) => !mailbox.parentId)
+        .map((mailbox) => {
+          const name = typeof mailbox.name === "string" ? mailbox.name : "";
+          const match = /^(.*?)\s*<([^>]+)>$/.exec(name);
+          if (match) return { id: mailbox.id, address: (match[2] ?? "").trim(), displayName: (match[1] ?? "").trim() || null };
+          return { id: mailbox.id, address: name, displayName: null };
+        })
+        .sort((a, b) => a.address.localeCompare(b.address));
+    });
+  }
+
+  private requireMailbox(mailboxId: string | null): string {
+    if (!mailboxId) throw new ApiError("Choose a mailbox first.", 400);
+    return mailboxId;
+  }
+
+  private async identityFor(mailboxId: string): Promise<{ id: string; email: string; name: string }> {
+    const session = await this.jmap.session();
+    const response = await this.jmap.call([["Identity/get", { accountId: session.accountId, ids: null }, "i"]]);
+    const result = JmapClient.result(response, "i");
+    const list = Array.isArray(result.list) ? (result.list as Record<string, unknown>[]) : [];
+    const match = list.find((item) => typeof item.id === "string" && item.id.startsWith(`${mailboxId}~`));
+    const email = match && typeof match.email === "string" ? match.email : "";
+    if (!match || !email) throw new ApiError("This mailbox has no sendable address.", 403);
+    return { id: String(match.id), email, name: typeof match.name === "string" ? match.name : "" };
+  }
+
+  /** One Email/query + Email/get round trip. */
+  private async queryPage(
+    filter: Record<string, unknown>,
+    position: number,
+    limit: number,
+  ): Promise<{ emails: JmapEmail[]; total: number }> {
+    const session = await this.jmap.session();
+    const response = await this.jmap.call([
+      ["Email/query", {
+        accountId: session.accountId,
+        filter,
+        sort: [{ property: "receivedAt", isAscending: false }],
+        position,
+        limit,
+        calculateTotal: true,
+      }, "q"],
+      ["Email/get", {
+        accountId: session.accountId,
+        "#ids": { resultOf: "q", name: "Email/query", path: "/ids" },
+        properties: SUMMARY_PROPERTIES,
+      }, "g"],
+    ]);
+    const query = JmapClient.result(response, "q");
+    const list = JmapClient.result(response, "g");
+    return {
+      emails: Array.isArray(list.list) ? (list.list as JmapEmail[]) : [],
+      total: typeof query.total === "number" ? query.total : 0,
+    };
+  }
+
+  /** Query one filter, or merge the same folder across every mailbox. */
+  private async queryMerged(
+    filters: Record<string, unknown>[],
+    page: number,
+    limit: number,
+  ): Promise<EmailsResult> {
+    const start = (page - 1) * limit;
+    if (filters.length === 1) {
+      const { emails, total } = await this.queryPage(filters[0] ?? {}, start, limit);
+      return { emails: emails.map(toSummary), totalCount: total, page, limit };
+    }
+    // One query per mailbox, all fetched up to this page's end, then merged.
+    const pages = await Promise.all(filters.map((filter) => this.queryPage(filter, 0, page * limit)));
+    const merged = pages
+      .flatMap((result) => result.emails)
+      .sort((a, b) => sortableDate(b).localeCompare(sortableDate(a)))
+      .slice(start, start + limit);
+    return {
+      emails: merged.map(toSummary),
+      totalCount: pages.reduce((total, result) => total + result.total, 0),
+      page,
+      limit,
+    };
+  }
+
+  /** The filters for "this folder in every mailbox", or the whole account. */
+  private async folderFilters(folder: string | null | undefined, extra: Record<string, unknown> = {}): Promise<Record<string, unknown>[]> {
+    if (!folder || folder === "all") return [{ ...extra }];
+    const mailboxes = await this.listMailboxes();
+    return mailboxes.map((mailbox) => ({ ...extra, inMailbox: encodeMailboxId(mailbox.id, folder) }));
+  }
+
+  // ── mail ─────────────────────────────────────────────────────────────
 
   async listEmails(
     mailboxId: string | null,
     folder = "inbox",
     options: { page?: number; limit?: number; category?: string } = {},
   ): Promise<EmailsResult> {
-    const args: Record<string, unknown> = {
-      folder,
-      page: options.page ?? 1,
-      limit: options.limit ?? 25,
-    };
-    if (options.category) args.category = options.category;
-    return this.call<EmailsResult>("list_emails", this.mailboxBody(mailboxId, args));
+    const mailbox = this.requireMailbox(mailboxId);
+    const page = options.page ?? 1;
+    const limit = options.limit ?? 25;
+    return this.run(() =>
+      this.queryMerged([{ inMailbox: encodeMailboxId(mailbox, folder) }], page, limit),
+    );
   }
 
   async getEmail(mailboxId: string | null, emailId: string): Promise<EmailFull> {
-    return this.call<EmailFull>("get_email", this.mailboxBody(mailboxId, { emailId }));
+    this.requireMailbox(mailboxId);
+    return this.run(async () => {
+      const session = await this.jmap.session();
+      const response = await this.jmap.call([
+        ["Email/get", {
+          accountId: session.accountId,
+          ids: [emailId],
+          properties: FULL_PROPERTIES,
+          fetchTextBodyValues: true,
+          fetchHTMLBodyValues: true,
+        }, "e"],
+      ]);
+      const result = JmapClient.result(response, "e");
+      const list = Array.isArray(result.list) ? (result.list as JmapEmail[]) : [];
+      const email = list[0];
+      if (!email) throw new ApiError("That message was not found.", 404);
+      return toFull(email);
+    });
   }
 
   async getThread(mailboxId: string | null, threadId: string): Promise<ThreadResult> {
-    return this.call<ThreadResult>("get_thread", this.mailboxBody(mailboxId, { threadId }));
+    this.requireMailbox(mailboxId);
+    return this.run(async () => {
+      const session = await this.jmap.session();
+      const thread = JmapClient.result(
+        await this.jmap.call([["Thread/get", { accountId: session.accountId, ids: [threadId] }, "t"]]),
+        "t",
+      );
+      const threads = Array.isArray(thread.list) ? (thread.list as { id: string; emailIds?: string[] }[]) : [];
+      const emailIds = threads[0]?.emailIds ?? [];
+      if (!emailIds.length) return { thread_id: threadId, emails: [] };
+      const emails = JmapClient.result(
+        await this.jmap.call([
+          ["Email/get", {
+            accountId: session.accountId,
+            ids: emailIds,
+            properties: FULL_PROPERTIES,
+            fetchTextBodyValues: true,
+            fetchHTMLBodyValues: true,
+          }, "e"],
+        ]),
+        "e",
+      );
+      const list = Array.isArray(emails.list) ? (emails.list as JmapEmail[]) : [];
+      return {
+        thread_id: threadId,
+        emails: list
+          .map(toFull)
+          .sort((a, b) => a.date.localeCompare(b.date)),
+      };
+    });
   }
 
   async searchEmails(mailboxId: string | null, filters: SearchFilters): Promise<EmailsResult> {
-    return this.call<EmailsResult>("search_emails", this.mailboxBody(mailboxId, cleanFilters(filters)));
+    const mailbox = this.requireMailbox(mailboxId);
+    const clean = cleanFilters(filters);
+    const page = clean.page ?? 1;
+    const limit = clean.limit ?? 25;
+    return this.run(async () => {
+      const filter = searchFilter(clean);
+      if (clean.folder) filter.inMailbox = encodeMailboxId(mailbox, clean.folder);
+      return this.queryMerged([filter], page, limit);
+    });
   }
 
   async getAttachment(mailboxId: string | null, attachmentId: string): Promise<AttachmentResult> {
-    return this.call<AttachmentResult>("get_attachment", this.mailboxBody(mailboxId, { attachmentId }));
+    this.requireMailbox(mailboxId);
+    return this.run(async () => {
+      const response = await this.jmap.openDownload(attachmentId);
+      const type = response.headers.get("content-type") ?? "application/octet-stream";
+      const textual = /^text\/|json|xml|csv/i.test(type);
+      const content = textual ? await response.text() : null;
+      return {
+        id: attachmentId,
+        messageId: "",
+        filename: downloadName(response) ?? "attachment",
+        mimetype: type,
+        size: Number(response.headers.get("content-length") ?? 0) || content?.length || 0,
+        content,
+        ...(textual ? {} : { omitted: "Binary attachment — open it in the Mailflare web app." }),
+      };
+    });
   }
 
-  // ── manage tools ─────────────────────────────────────────────────────
+  // ── manage ───────────────────────────────────────────────────────────
+
+  private async updateEmail(emailId: string, patch: Record<string, unknown>): Promise<ManageResult> {
+    const session = await this.jmap.session();
+    const response = await this.jmap.call([
+      ["Email/set", { accountId: session.accountId, update: { [emailId]: patch } }, "s"],
+    ]);
+    const result = JmapClient.result(response, "s");
+    const notUpdated = result.notUpdated as Record<string, { description?: string }> | undefined;
+    if (notUpdated?.[emailId]) throw new ApiError(notUpdated[emailId]?.description ?? "The server refused that change.", 400);
+    return { status: "updated", emailId };
+  }
 
   async markEmailRead(mailboxId: string | null, emailId: string, read: boolean): Promise<ManageResult> {
-    return this.call<ManageResult>("mark_email_read", this.mailboxBody(mailboxId, { emailId, read }));
+    this.requireMailbox(mailboxId);
+    return this.run(() => this.updateEmail(emailId, { keywords: { $seen: read } }));
   }
 
   async starEmail(mailboxId: string | null, emailId: string, starred: boolean): Promise<ManageResult> {
-    return this.call<ManageResult>("star_email", this.mailboxBody(mailboxId, { emailId, starred }));
+    this.requireMailbox(mailboxId);
+    return this.run(() => this.updateEmail(emailId, { keywords: { $flagged: starred } }));
   }
 
   async moveEmail(mailboxId: string | null, emailId: string, folderId: string): Promise<ManageResult> {
-    return this.call<ManageResult>("move_email", this.mailboxBody(mailboxId, { emailId, folderId }));
+    const mailbox = this.requireMailbox(mailboxId);
+    return this.run(() => this.updateEmail(emailId, { mailboxIds: { [encodeMailboxId(mailbox, folderId)]: true } }));
   }
 
   async deleteEmail(mailboxId: string | null, emailId: string, permanent = false): Promise<ManageResult> {
-    // The surface refuses a permanent delete without an explicit confirm;
-    // the app only reaches permanent after its own confirmation dialog.
-    const args: Record<string, unknown> = { emailId, permanent };
-    if (permanent) args.confirm = true;
-    return this.call<ManageResult>("delete_email", this.mailboxBody(mailboxId, args));
+    const mailbox = this.requireMailbox(mailboxId);
+    return this.run(async () => {
+      if (!permanent) {
+        await this.updateEmail(emailId, { mailboxIds: { [encodeMailboxId(mailbox, "trash")]: true } });
+        return { status: "trashed", emailId };
+      }
+      const session = await this.jmap.session();
+      const response = await this.jmap.call([
+        ["Email/set", { accountId: session.accountId, destroy: [emailId] }, "d"],
+      ]);
+      const result = JmapClient.result(response, "d");
+      const notDestroyed = result.notDestroyed as Record<string, { description?: string }> | undefined;
+      if (notDestroyed?.[emailId]) throw new ApiError(notDestroyed[emailId]?.description ?? "The server refused the delete.", 400);
+      return { status: "deleted", emailId };
+    });
   }
 
-  async snoozeEmail(mailboxId: string | null, emailId: string, until: string): Promise<ManageResult> {
-    return this.call<ManageResult>("snooze_email", this.mailboxBody(mailboxId, { emailId, until }));
+  async restoreEmail(mailboxId: string | null, emailId: string): Promise<ManageResult> {
+    const mailbox = this.requireMailbox(mailboxId);
+    return this.run(() => this.updateEmail(emailId, { mailboxIds: { [encodeMailboxId(mailbox, "inbox")]: true } }));
   }
 
-  async unsnoozeEmail(mailboxId: string | null, emailId: string): Promise<ManageResult> {
-    return this.call<ManageResult>("unsnooze_email", this.mailboxBody(mailboxId, { emailId }));
+  async emptyTrash(mailboxId: string | null): Promise<{ deleted: number }> {
+    const mailbox = this.requireMailbox(mailboxId);
+    return this.run(async () => {
+      const session = await this.jmap.session();
+      let deleted = 0;
+      for (;;) {
+        const { emails } = await this.queryPage({ inMailbox: encodeMailboxId(mailbox, "trash") }, 0, SET_BATCH);
+        if (!emails.length) break;
+        const ids = emails.slice(0, SET_BATCH).map((email) => email.id);
+        const response = await this.jmap.call([
+          ["Email/set", { accountId: session.accountId, destroy: ids }, "d"],
+        ]);
+        const result = JmapClient.result(response, "d");
+        const destroyed = Array.isArray(result.destroyed) ? (result.destroyed as string[]) : [];
+        deleted += destroyed.length;
+        if (destroyed.length < ids.length) break;
+      }
+      return { deleted };
+    });
   }
 
-  async setSenderPolicy(mailboxId: string | null, emailId: string, policy: "allow" | "block"): Promise<ManageResult> {
-    return this.call<ManageResult>("set_sender_policy", this.mailboxBody(mailboxId, { emailId, action: policy }));
+  async markThreadRead(mailboxId: string | null, threadId: string): Promise<ManageResult> {
+    this.requireMailbox(mailboxId);
+    return this.run(async () => {
+      const session = await this.jmap.session();
+      const thread = JmapClient.result(
+        await this.jmap.call([["Thread/get", { accountId: session.accountId, ids: [threadId] }, "t"]]),
+        "t",
+      );
+      const emailIds = Array.isArray(thread.list) && thread.list[0]?.emailIds ? (thread.list[0].emailIds as string[]) : [];
+      if (emailIds.length) {
+        const update: Record<string, unknown> = {};
+        for (const id of emailIds) update[id] = { keywords: { $seen: true } };
+        await this.jmap.call([["Email/set", { accountId: session.accountId, update }, "s"]]);
+      }
+      return { status: "updated", threadId };
+    });
   }
 
-  async unsubscribeEmail(mailboxId: string | null, emailId: string): Promise<ManageResult> {
-    return this.call<ManageResult>("unsubscribe_email", this.mailboxBody(mailboxId, { emailId }));
-  }
+  // ── drafts and sending ───────────────────────────────────────────────
 
-  async draftReply(
-    mailboxId: string | null,
-    input: { originalEmailId: string; to?: string; subject: string; body: string },
-  ): Promise<DraftSavedResult> {
-    const args: Record<string, unknown> = {
-      originalEmailId: input.originalEmailId,
+  private async draftBody(
+    mailboxId: string,
+    input: { to: string; cc?: string; bcc?: string; subject: string; body: string; inReplyTo?: string | null; references?: string[] },
+  ): Promise<Record<string, unknown>> {
+    const identity = await this.identityFor(mailboxId);
+    const html = plainTextToHtml(input.body);
+    return {
+      mailboxIds: { [encodeMailboxId(mailboxId, "drafts")]: true },
+      keywords: { $draft: true, $seen: true },
+      from: [{ email: identity.email, ...(identity.name ? { name: identity.name } : {}) }],
+      to: parseAddressList(input.to),
+      ...(input.cc ? { cc: parseAddressList(input.cc) } : {}),
+      ...(input.bcc ? { bcc: parseAddressList(input.bcc) } : {}),
       subject: input.subject,
-      bodyHtml: plainTextToHtml(input.body),
+      bodyValues: { t: { value: input.body }, h: { value: html } },
+      textBody: [{ partId: "t", type: "text/plain" }],
+      htmlBody: [{ partId: "h", type: "text/html" }],
+      ...(input.inReplyTo ? { inReplyTo: [input.inReplyTo] } : {}),
+      ...(input.references?.length ? { references: input.references } : {}),
     };
-    if (input.to) args.to = input.to;
-    return this.call<DraftSavedResult>("draft_reply", this.mailboxBody(mailboxId, args));
   }
 
   async createDraft(
     mailboxId: string | null,
     input: { to: string; subject: string; body: string; inReplyTo?: string; threadId?: string },
   ): Promise<DraftSavedResult> {
-    const args: Record<string, unknown> = {
-      to: input.to,
-      subject: input.subject,
-      bodyHtml: plainTextToHtml(input.body),
-    };
-    if (input.inReplyTo) args.in_reply_to = input.inReplyTo;
-    if (input.threadId) args.thread_id = input.threadId;
-    return this.call<DraftSavedResult>("create_draft", this.mailboxBody(mailboxId, args));
+    const mailbox = this.requireMailbox(mailboxId);
+    return this.run(async () => {
+      const session = await this.jmap.session();
+      const create = await this.draftBody(mailbox, { ...input, inReplyTo: input.inReplyTo ?? null });
+      const response = await this.jmap.call([
+        ["Email/set", { accountId: session.accountId, create: { draft: create } }, "c"],
+      ]);
+      const result = JmapClient.result(response, "c");
+      const created = result.created as Record<string, { id?: string }> | undefined;
+      const id = created?.draft?.id;
+      if (!id) throw new ApiError(createError(result.notCreated, "draft") ?? "The server did not save the draft.", 400);
+      return { draftId: id, status: "draft" };
+    });
+  }
+
+  async draftReply(
+    mailboxId: string | null,
+    input: { originalEmailId: string; to?: string; subject: string; body: string },
+  ): Promise<DraftSavedResult> {
+    const mailbox = this.requireMailbox(mailboxId);
+    return this.run(async () => {
+      const original = await this.getEmail(mailbox, input.originalEmailId);
+      return this.createDraft(mailbox, {
+        to: input.to ?? original.sender ?? "",
+        subject: input.subject,
+        body: input.body,
+        inReplyTo: original.message_id ?? undefined,
+        threadId: original.thread_id ?? undefined,
+      });
+    });
   }
 
   async updateDraft(
     mailboxId: string | null,
     input: { draftId: string; to?: string; subject?: string; body?: string },
   ): Promise<DraftUpdatedResult> {
-    const args: Record<string, unknown> = { draftId: input.draftId };
-    // Only fields that actually carry a value are sent: the tool falls back
-    // to the stored draft's own values for anything absent, and an empty
-    // string would overwrite them.
-    if (input.to !== undefined && input.to.trim()) args.to = input.to.trim();
-    if (input.subject !== undefined && input.subject.trim()) args.subject = input.subject.trim();
-    if (input.body !== undefined && input.body.trim()) args.bodyHtml = plainTextToHtml(input.body);
-    return this.call<DraftUpdatedResult>("update_draft", this.mailboxBody(mailboxId, args));
+    this.requireMailbox(mailboxId);
+    return this.run(async () => {
+      const patch: Record<string, unknown> = {};
+      if (input.to !== undefined && input.to.trim()) patch.to = parseAddressList(input.to);
+      if (input.subject !== undefined && input.subject.trim()) patch.subject = input.subject.trim();
+      if (input.body !== undefined && input.body.trim()) {
+        const html = plainTextToHtml(input.body);
+        patch.bodyValues = { t: { value: input.body }, h: { value: html } };
+        patch.textBody = [{ partId: "t", type: "text/plain" }];
+        patch.htmlBody = [{ partId: "h", type: "text/html" }];
+      }
+      await this.updateEmail(input.draftId, patch);
+      return { draftId: input.draftId, status: "draft" };
+    });
   }
 
   async discardDraft(mailboxId: string | null, draftId: string): Promise<DiscardedResult> {
-    return this.call<DiscardedResult>("discard_draft", this.mailboxBody(mailboxId, { draftId }));
+    this.requireMailbox(mailboxId);
+    return this.run(async () => {
+      await this.deleteEmail(mailboxId, draftId, true);
+      return { deleted: true };
+    });
   }
 
-  async sendReply(
-    mailboxId: string | null,
-    input: { originalEmailId: string; to: string; subject: string; body: string },
-  ): Promise<SendResult> {
-    return this.call<SendResult>(
-      "send_reply",
-      this.mailboxBody(mailboxId, {
-        originalEmailId: input.originalEmailId,
-        to: input.to,
-        subject: input.subject,
-        bodyHtml: plainTextToHtml(input.body),
-      }),
-    );
+  private async submit(mailboxId: string, create: Record<string, unknown>): Promise<SendResult> {
+    const session = await this.jmap.session();
+    const identity = await this.identityFor(mailboxId);
+    const response = await this.jmap.call([
+      ["Email/set", { accountId: session.accountId, create: { draft: create } }, "c"],
+      ["EmailSubmission/set", { accountId: session.accountId, create: { send: { identityId: identity.id, emailId: "#draft" } } }, "s"],
+    ]);
+    const setResult = JmapClient.result(response, "c", "Email/set");
+    const created = setResult.created as Record<string, { id?: string }> | undefined;
+    if (!created?.draft?.id) throw new ApiError(createError(setResult.notCreated, "draft") ?? "The server did not save the message.", 400);
+    const submitResult = JmapClient.result(response, "s", "EmailSubmission/set");
+    const submitted = submitResult.created as Record<string, { id?: string }> | undefined;
+    if (!submitted?.send?.id) throw new ApiError(createError(submitResult.notCreated, "send") ?? "The server refused to send.", 400);
+    return { messageId: submitted.send.id, status: "sent" };
   }
 
   async sendEmail(
     mailboxId: string | null,
     input: { to: string; cc?: string; bcc?: string; subject: string; body: string; attachments?: OutboundAttachment[] },
   ): Promise<SendResult> {
-    const args: Record<string, unknown> = {
-      to: input.to,
-      subject: input.subject,
-      bodyHtml: plainTextToHtml(input.body),
-    };
-    if (input.cc) args.cc = input.cc;
-    if (input.bcc) args.bcc = input.bcc;
-    if (input.attachments?.length) {
-      args.attachments = input.attachments.map(({ filename, mimetype, content_base64 }) => ({ filename, mimetype, content_base64 }));
-    }
-    return this.call<SendResult>("send_email", this.mailboxBody(mailboxId, args));
+    const mailbox = this.requireMailbox(mailboxId);
+    if (input.attachments?.length) throw new ApiError("Attachments are not supported by this build yet.", 501);
+    return this.run(async () => this.submit(mailbox, await this.draftBody(mailbox, input)));
   }
 
-  // ── label tools ──────────────────────────────────────────────────────
-
-  async listLabels(mailboxId: string | null): Promise<LabelListResult> {
-    return this.call<LabelListResult>("list_labels", this.mailboxBody(mailboxId, {}));
-  }
-
-  async createLabel(mailboxId: string | null, input: { name: string; color?: string }): Promise<{ label: Label }> {
-    const args: Record<string, unknown> = { name: input.name };
-    if (input.color) args.color = input.color;
-    return this.call<{ label: Label }>("create_label", this.mailboxBody(mailboxId, args));
-  }
-
-  async updateLabel(
+  async sendReply(
     mailboxId: string | null,
-    input: { label: string; name?: string; color?: string },
-  ): Promise<{ label: Label }> {
-    const args: Record<string, unknown> = { label: input.label };
-    if (input.name !== undefined) args.name = input.name;
-    if (input.color !== undefined) args.color = input.color;
-    return this.call<{ label: Label }>("update_label", this.mailboxBody(mailboxId, args));
+    input: { originalEmailId: string; to: string; subject: string; body: string },
+  ): Promise<SendResult> {
+    const mailbox = this.requireMailbox(mailboxId);
+    return this.run(async () => {
+      const original = await this.getEmail(mailbox, input.originalEmailId);
+      return this.submit(
+        mailbox,
+        await this.draftBody(mailbox, {
+          to: input.to,
+          subject: input.subject,
+          body: input.body,
+          inReplyTo: original.message_id ?? null,
+        }),
+      );
+    });
   }
 
-  async deleteLabel(mailboxId: string | null, label: string): Promise<{ deleted: boolean }> {
-    return this.call<{ deleted: boolean }>("delete_label", this.mailboxBody(mailboxId, { label }));
-  }
+  // ── account-wide listings ────────────────────────────────────────────
 
-  async addLabel(mailboxId: string | null, emailId: string, label: string): Promise<LabelUpdateResult> {
-    return this.call<LabelUpdateResult>("add_label", this.mailboxBody(mailboxId, { emailId, label }));
-  }
-
-  async removeLabel(mailboxId: string | null, emailId: string, label: string): Promise<LabelUpdateResult> {
-    return this.call<LabelUpdateResult>("remove_label", this.mailboxBody(mailboxId, { emailId, label }));
-  }
-
-  // ── template tools ───────────────────────────────────────────────────
-
-  async listTemplates(mailboxId: string | null): Promise<TemplateListResult> {
-    return this.call<TemplateListResult>("list_templates", this.mailboxBody(mailboxId, {}));
-  }
-
-  async createTemplate(
-    mailboxId: string | null,
-    input: { name: string; subject?: string; body: string },
-  ): Promise<{ template: TemplateRow }> {
-    const args: Record<string, unknown> = { name: input.name, body: input.body };
-    if (input.subject) args.subject = input.subject;
-    return this.call<{ template: TemplateRow }>("create_template", this.mailboxBody(mailboxId, args));
-  }
-
-  async updateTemplate(
-    mailboxId: string | null,
-    input: { templateId: string; name?: string; subject?: string; body?: string },
-  ): Promise<{ template: TemplateRow }> {
-    const args: Record<string, unknown> = { templateId: input.templateId };
-    if (input.name !== undefined) args.name = input.name;
-    if (input.subject !== undefined) args.subject = input.subject;
-    if (input.body !== undefined) args.body = input.body;
-    return this.call<{ template: TemplateRow }>("update_template", this.mailboxBody(mailboxId, args));
-  }
-
-  async deleteTemplate(mailboxId: string | null, templateId: string): Promise<{ deleted: boolean }> {
-    return this.call<{ deleted: boolean }>("delete_template", this.mailboxBody(mailboxId, { templateId }));
-  }
-
-  // ── saved-search tools ───────────────────────────────────────────────
-
-  async listSavedSearches(mailboxId: string | null): Promise<{ searches: SavedSearchRow[] }> {
-    return this.call<{ searches: SavedSearchRow[] }>(
-      "list_saved_searches",
-      this.mailboxBody(mailboxId, {}),
-    );
-  }
-
-  async createSavedSearch(
-    mailboxId: string | null,
-    input: { name: string; query: string },
-  ): Promise<{ search: SavedSearchRow }> {
-    return this.call<{ search: SavedSearchRow }>(
-      "create_saved_search",
-      this.mailboxBody(mailboxId, { name: input.name, query: input.query }),
-    );
-  }
-
-  async updateSavedSearch(
-    mailboxId: string | null,
-    input: { searchId: string; name?: string; query?: string },
-  ): Promise<{ search: SavedSearchRow }> {
-    const args: Record<string, unknown> = { searchId: input.searchId };
-    if (input.name !== undefined) args.name = input.name;
-    if (input.query !== undefined) args.query = input.query;
-    return this.call<{ search: SavedSearchRow }>("update_saved_search", this.mailboxBody(mailboxId, args));
-  }
-
-  async deleteSavedSearch(mailboxId: string | null, searchId: string): Promise<{ deleted: boolean }> {
-    return this.call<{ deleted: boolean }>("delete_saved_search", this.mailboxBody(mailboxId, { searchId }));
-  }
-
-  // ── thread tools ─────────────────────────────────────────────────────
-
-  async muteThread(mailboxId: string | null, threadId: string): Promise<{ muted: boolean }> {
-    return this.call<{ muted: boolean }>("mute_thread", this.mailboxBody(mailboxId, { threadId }));
-  }
-
-  async unmuteThread(mailboxId: string | null, threadId: string): Promise<{ muted: boolean }> {
-    return this.call<{ muted: boolean }>("unmute_thread", this.mailboxBody(mailboxId, { threadId }));
-  }
-
-  async markThreadRead(mailboxId: string | null, threadId: string): Promise<ManageResult> {
-    return this.call<ManageResult>("mark_thread_read", this.mailboxBody(mailboxId, { threadId }));
-  }
-
-  async summarizeThread(mailboxId: string | null, threadId: string): Promise<ThreadSummary> {
-    return this.call<ThreadSummary>("summarize_thread", this.mailboxBody(mailboxId, { threadId }));
-  }
-
-  // ── trash tools ──────────────────────────────────────────────────────
-
-  async restoreEmail(mailboxId: string | null, emailId: string): Promise<ManageResult> {
-    return this.call<ManageResult>("restore_email", this.mailboxBody(mailboxId, { emailId }));
-  }
-
-  async emptyTrash(mailboxId: string | null): Promise<{ deleted: number }> {
-    return this.call<{ deleted: number }>("empty_trash", this.mailboxBody(mailboxId, { confirm: true }));
-  }
-
-  // ── scheduled-send tools ─────────────────────────────────────────────
-
-  async listScheduledSends(mailboxId: string | null): Promise<ScheduledSendListResult> {
-    return this.call<ScheduledSendListResult>(
-      "list_scheduled_sends",
-      this.mailboxBody(mailboxId, {}),
-    );
-  }
-
-  async scheduleSend(
-    mailboxId: string | null,
-    input: { to: string; subject: string; body: string; sendAt: string; cc?: string; bcc?: string },
-  ): Promise<{ id: string; status: string; sendAt: string }> {
-    const args: Record<string, unknown> = {
-      to: input.to,
-      subject: input.subject,
-      bodyHtml: plainTextToHtml(input.body),
-      sendAt: input.sendAt,
-    };
-    if (input.cc) args.cc = input.cc;
-    if (input.bcc) args.bcc = input.bcc;
-    return this.call<{ id: string; status: string; sendAt: string }>("schedule_send", this.mailboxBody(mailboxId, args));
-  }
-
-  async retryScheduledSend(
-    mailboxId: string | null,
-    scheduledSendId: string,
-  ): Promise<{ id: string; status: string }> {
-    return this.call<{ id: string; status: string }>(
-      "retry_scheduled_send",
-      this.mailboxBody(mailboxId, { scheduledSendId }),
-    );
-  }
-
-  // ── app-only tools (global key) ──────────────────────────────────────
-
-  async listMailboxes(): Promise<Mailbox[]> {
-    this.assertAppKey("list_mailboxes");
-    return this.call<Mailbox[]>("list_mailboxes", {});
-  }
-
-  async searchAllMailboxes(filters: SearchFilters): Promise<EmailsResult> {
-    this.assertAppKey("search_all_mailboxes");
-    return this.call<EmailsResult>("search_all_mailboxes", cleanFilters(filters));
-  }
-
-  /**
-   * Every mailbox's mail merged by date (newest first) — the All Accounts
-   * listing. A folder applies to every mailbox; null (or "all") merges
-   * every folder. Each row carries `mailbox_id`.
-   */
   async listAllEmails(
     folder: string | null,
     options: { page?: number; limit?: number } = {},
   ): Promise<EmailsResult> {
-    this.assertAppKey("list_all_emails");
-    const args: Record<string, unknown> = {
-      page: options.page ?? 1,
-      limit: options.limit ?? 25,
-    };
-    if (folder && folder !== "all") args.folder = folder;
-    return this.call<EmailsResult>("list_all_emails", args);
+    const page = options.page ?? 1;
+    const limit = options.limit ?? 25;
+    return this.run(async () => this.queryMerged(await this.folderFilters(folder), page, limit));
   }
+
+  async searchAllMailboxes(filters: SearchFilters): Promise<EmailsResult> {
+    const clean = cleanFilters(filters);
+    const page = clean.page ?? 1;
+    const limit = clean.limit ?? 25;
+    return this.run(async () => {
+      const extra = searchFilter(clean);
+      return this.queryMerged(await this.folderFilters(clean.folder, extra), page, limit);
+    });
+  }
+
+  // ── features only the fork's REST facade had ─────────────────────────
+
+  private unsupported(feature: string): never {
+    throw new ApiError(`${feature} is not available over JMAP on this server.`, 501);
+  }
+
+  async snoozeEmail(..._args: unknown[]): Promise<ManageResult> { return this.unsupported("Snoozing"); }
+  async unsnoozeEmail(..._args: unknown[]): Promise<ManageResult> { return this.unsupported("Unsnoozing"); }
+  async setSenderPolicy(..._args: unknown[]): Promise<ManageResult> { return this.unsupported("Sender policy"); }
+  async unsubscribeEmail(..._args: unknown[]): Promise<ManageResult> { return this.unsupported("Unsubscribe"); }
+  async muteThread(..._args: unknown[]): Promise<{ muted: boolean }> { return this.unsupported("Muting a thread"); }
+  async unmuteThread(..._args: unknown[]): Promise<{ muted: boolean }> { return this.unsupported("Unmuting a thread"); }
+  async summarizeThread(..._args: unknown[]): Promise<ThreadSummary> { return this.unsupported("Thread summaries"); }
+  async listLabels(..._args: unknown[]): Promise<LabelListResult> { return this.unsupported("Labels"); }
+  async createLabel(..._args: unknown[]): Promise<{ label: Label }> { return this.unsupported("Labels"); }
+  async updateLabel(..._args: unknown[]): Promise<{ label: Label }> { return this.unsupported("Labels"); }
+  async deleteLabel(..._args: unknown[]): Promise<{ deleted: boolean }> { return this.unsupported("Labels"); }
+  async addLabel(..._args: unknown[]): Promise<LabelUpdateResult> { return this.unsupported("Labels"); }
+  async removeLabel(..._args: unknown[]): Promise<LabelUpdateResult> { return this.unsupported("Labels"); }
+  async listTemplates(..._args: unknown[]): Promise<TemplateListResult> { return this.unsupported("Templates"); }
+  async createTemplate(..._args: unknown[]): Promise<{ template: TemplateRow }> { return this.unsupported("Templates"); }
+  async updateTemplate(..._args: unknown[]): Promise<{ template: TemplateRow }> { return this.unsupported("Templates"); }
+  async deleteTemplate(..._args: unknown[]): Promise<{ deleted: boolean }> { return this.unsupported("Templates"); }
+  async listSavedSearches(..._args: unknown[]): Promise<{ searches: SavedSearchRow[] }> { return this.unsupported("Saved searches"); }
+  async createSavedSearch(..._args: unknown[]): Promise<{ search: SavedSearchRow }> { return this.unsupported("Saved searches"); }
+  async updateSavedSearch(..._args: unknown[]): Promise<{ search: SavedSearchRow }> { return this.unsupported("Saved searches"); }
+  async deleteSavedSearch(..._args: unknown[]): Promise<{ deleted: boolean }> { return this.unsupported("Saved searches"); }
+  async listScheduledSends(..._args: unknown[]): Promise<ScheduledSendListResult> { return this.unsupported("Scheduled sends"); }
+  async scheduleSend(..._args: unknown[]): Promise<{ id: string; status: string; sendAt: string }> { return this.unsupported("Scheduled sends"); }
+  async retryScheduledSend(..._args: unknown[]): Promise<{ id: string; status: string }> { return this.unsupported("Scheduled sends"); }
+}
+
+function createError(notCreated: unknown, key: string): string | null {
+  if (!notCreated || typeof notCreated !== "object") return null;
+  const entry = (notCreated as Record<string, { description?: string; type?: string }>)[key];
+  if (!entry) return null;
+  return entry.description ?? (entry.type ? `The server refused it (${entry.type}).` : null);
+}
+
+function sortableDate(email: JmapEmail): string {
+  return email.receivedAt ?? email.sentAt ?? "";
+}
+
+function toSummary(email: JmapEmail): EmailSummary {
+  const mailboxIds = Object.keys(email.mailboxIds ?? {});
+  const first = mailboxIds[0] ?? "";
+  const ref = first ? decodeMailboxId(first) : null;
+  const keywords = email.keywords ?? {};
+  return {
+    id: email.id,
+    subject: email.subject ?? null,
+    sender: formatAddress(email.from?.[0]) || formatAddress(email.sender?.[0]) || null,
+    recipient: formatAddress(email.to?.[0]) || null,
+    date: sortableDate(email),
+    read: keywords.$seen === true,
+    starred: keywords.$flagged === true,
+    thread_id: email.threadId ?? null,
+    category: null,
+    folder_id: ref?.folderId ?? null,
+    status: ref?.role ? roleToStatus(ref.role) : "received",
+    snippet: email.preview ?? null,
+  };
+}
+
+function bodyValue(email: JmapEmail, parts: JmapPart[] | null | undefined): string | null {
+  const part = parts?.[0];
+  if (!part?.partId) return null;
+  const value = email.bodyValues?.[part.partId]?.value;
+  return typeof value === "string" ? value : null;
+}
+
+function toFull(email: JmapEmail): EmailFull {
+  const summary = toSummary(email);
+  const mailboxId = Object.keys(email.mailboxIds ?? {})[0] ?? "";
+  const ref = mailboxId ? decodeMailboxId(mailboxId) : null;
+  return {
+    ...summary,
+    ...(ref ? { mailbox_id: ref.mailboxId } : {}),
+    cc: formatAddressList(email.cc) || null,
+    bcc: formatAddressList(email.bcc) || null,
+    reply_to: formatAddressList(email.replyTo) || null,
+    message_id: email.messageId?.[0] ?? null,
+    in_reply_to: email.inReplyTo?.[0] ?? null,
+    bodyText: bodyValue(email, email.textBody),
+    bodyHtml: bodyValue(email, email.htmlBody),
+    attachments: (email.attachments ?? [])
+      .filter((part) => part.blobId)
+      .map((part) => ({
+        id: String(part.blobId),
+        filename: part.name ?? "attachment",
+        mimetype: part.type ?? "application/octet-stream",
+        size: part.size ?? 0,
+      })),
+  };
+}
+
+/** The JMAP filter for a set of search filters. */
+function searchFilter(filters: SearchFilters): Record<string, unknown> {
+  const filter: Record<string, unknown> = {};
+  if (filters.query) filter.text = filters.query;
+  if (filters.from) filter.from = filters.from;
+  if (filters.to) filter.to = filters.to;
+  if (filters.subject) filter.subject = filters.subject;
+  if (filters.hasAttachment) filter.hasAttachment = true;
+  if (filters.before) filter.before = new Date(filters.before).toISOString();
+  if (filters.after) filter.after = new Date(filters.after).toISOString();
+  if (filters.isRead === true) filter.hasKeyword = "$seen";
+  else if (filters.isRead === false) filter.notKeyword = "$seen";
+  if (filters.isStarred === true) filter.hasKeyword = "$flagged";
+  else if (filters.isStarred === false) filter.notKeyword = "$flagged";
+  return filter;
+}
+
+function downloadName(response: Response): string | null {
+  const disposition = response.headers.get("content-disposition");
+  if (!disposition) return null;
+  const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition);
+  return match?.[1] ? decodeURIComponent(match[1]) : null;
 }
 
 /**
