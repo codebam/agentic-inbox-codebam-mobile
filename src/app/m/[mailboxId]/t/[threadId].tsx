@@ -34,10 +34,7 @@ export default function ThreadScreen() {
 
   if (!ready) return <Loading />;
   if (!session || !api) return <Redirect href="/connect" />;
-  const ownMailbox = session.kind === "mailbox" ? (session.mailboxId ?? "") : mailbox;
-  if (!mailbox || (session.kind === "mailbox" && mailbox !== session.mailboxId)) {
-    return <Redirect href={{ pathname: "/m/[mailboxId]", params: { mailboxId: ownMailbox } }} />;
-  }
+  if (!mailbox) return <Redirect href="/m" />;
 
   const messages = query.data?.emails ?? [];
   const title = truncate(messages[0]?.subject?.trim() || "Thread", 42);

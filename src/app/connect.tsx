@@ -36,17 +36,14 @@ export default function ConnectScreen() {
     setError(null);
     const next = createSession(serverUrl, key);
     if (!next) {
-      setError("That doesn't look like an inbox key. Expected ain1_ (one mailbox) or ain2_ (all mailboxes).");
+      setError("That doesn't look like a Mailflare API key. Expected ep_… — create one under Settings → API keys with \"Allow JMAP\" ticked.");
       return;
     }
     setBusy(true);
     try {
       const client = new ScopedApi(next);
-      if (next.kind === "app") {
-        await client.listMailboxes();
-      } else if (next.mailboxId) {
-        await client.listEmails(next.mailboxId, "inbox", { limit: 1, page: 1 });
-      }
+      // Discovery plus Mailbox/get proves the key and the server in one step.
+      await client.listMailboxes();
       await signIn(next);
       router.replace("/m");
     } catch (err) {
@@ -91,7 +88,7 @@ export default function ConnectScreen() {
               <TextInput
                 value={key}
                 onChangeText={setKey}
-                placeholder="ain1_… or ain2_…"
+                placeholder="ep_…"
                 placeholderTextColor={theme.textSecondary}
                 autoCapitalize="none"
                 autoCorrect={false}
@@ -147,9 +144,9 @@ export default function ConnectScreen() {
           </View>
 
           <ThemedText type="small" themeColor="textSecondary" style={styles.help}>
-            Mint a global key in Global Settings, App access tokens (reaches every mailbox), or a
-            per-mailbox key under a mailbox&apos;s Settings, Access tokens. The key is stored in this
-            device&apos;s secure storage and sent only to your inbox server.
+            Create an API key in Settings → API keys with &quot;Allow JMAP&quot; ticked (and the
+            mailboxes you want this app to read). The key is stored in this device&apos;s secure
+            storage and sent only to your inbox server.
           </ThemedText>
         </ScrollView>
       </KeyboardAvoidingView>

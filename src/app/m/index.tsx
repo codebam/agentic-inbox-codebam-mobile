@@ -20,12 +20,6 @@ export default function MailboxesScreen() {
 
   if (!ready) return <Loading />;
   if (!session || !api) return <Redirect href="/connect" />;
-  if (session.kind === "mailbox") {
-    return (
-      <Redirect href={{ pathname: "/m/[mailboxId]", params: { mailboxId: session.mailboxId ?? "" } }} />
-    );
-  }
-
   return (
     <View style={[styles.container, { backgroundColor: theme.background }]}>
       <Stack.Screen

@@ -49,10 +49,6 @@ export default function AllAccountsScreen() {
 
   if (!ready) return <Loading />;
   if (!session || !api) return <Redirect href="/connect" />;
-  if (session.kind !== "app") {
-    // The merged listing reaches every mailbox, so it needs a global key.
-    return <Redirect href="/m" />;
-  }
 
   const rowLabel = (email: EmailSummary): string => {
     const account = accountName(email.mailbox_id);

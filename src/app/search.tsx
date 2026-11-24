@@ -38,9 +38,8 @@ export default function SearchScreen() {
 
   const paramMailbox =
     typeof params.mailboxId === "string" && params.mailboxId ? params.mailboxId : null;
-  const sessionMailbox = session?.kind === "mailbox" ? session.mailboxId : null;
-  // A null target searches every mailbox, which only a global key may do.
-  const targetMailbox = paramMailbox ?? sessionMailbox;
+  // One key reaches every mailbox, so a null target searches all of them.
+  const targetMailbox = paramMailbox;
   const global = targetMailbox === null;
 
   const results = useSearch(api, targetMailbox, { query: submitted, limit: 50 });

@@ -54,10 +54,7 @@ export default function FolderScreen() {
 
   if (!ready) return <Loading />;
   if (!session || !api) return <Redirect href="/connect" />;
-  const ownMailbox = session.kind === "mailbox" ? (session.mailboxId ?? "") : mailboxId;
-  if (!mailboxId || (session.kind === "mailbox" && mailboxId !== session.mailboxId)) {
-    return <Redirect href={{ pathname: "/m/[mailboxId]", params: { mailboxId: ownMailbox } }} />;
-  }
+  if (!mailboxId) return <Redirect href="/m" />;
 
   const emails = query.data?.pages.flat() ?? [];
   const folderName = folderDisplayName(folder ?? "inbox");

@@ -40,12 +40,8 @@ export default function SettingsScreen() {
   return (
     <View style={[styles.container, { backgroundColor: theme.background }]}>
       <View style={[styles.card, { backgroundColor: theme.backgroundElement }]}>
-        <InfoRow
-          label="Key"
-          value={session.kind === "app" ? "Global key (every mailbox)" : "Scoped key (one mailbox)"}
-        />
+        <InfoRow label="Key" value="JMAP API key (every mailbox you can read)" />
         <InfoRow label="Secret" value={tokenPreview(session.token)} />
-        {session.mailboxId ? <InfoRow label="Mailbox" value={session.mailboxId} /> : null}
         <InfoRow label="Server" value={session.baseUrl} />
       </View>
 

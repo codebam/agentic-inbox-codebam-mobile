@@ -31,10 +31,7 @@ export default function FoldersScreen() {
 
   if (!ready) return <Loading />;
   if (!session) return <Redirect href="/connect" />;
-  const ownMailbox = session.kind === "mailbox" ? (session.mailboxId ?? "") : mailboxId;
-  if (!mailboxId || (session.kind === "mailbox" && mailboxId !== session.mailboxId)) {
-    return <Redirect href={{ pathname: "/m/[mailboxId]", params: { mailboxId: ownMailbox } }} />;
-  }
+  if (!mailboxId) return <Redirect href="/m" />;
 
   return (
     <View style={[styles.container, { backgroundColor: theme.background }]}>
@@ -82,71 +79,10 @@ export default function FoldersScreen() {
             <Ionicons name="chevron-forward" size={18} color={theme.textSecondary} />
           </Pressable>
         )}
-        ListHeaderComponent={
-          session.kind === "app" ? (
-            <View style={styles.hint}>
-              <ThemedText type="small" themeColor="textSecondary">
-                Global key: this app can open every mailbox. Switch mailboxes from the Mailboxes
-                screen.
-              </ThemedText>
-            </View>
-          ) : null
-        }
-        ListFooterComponent={
-          <View style={styles.manageSection}>
-            <ThemedText type="small" themeColor="textSecondary" style={styles.sectionTitle}>
-              Manage
-            </ThemedText>
-            <ManageRow
-              icon="pricetags-outline"
-              label="Labels"
-              onPress={() => router.push({ pathname: "/m/[mailboxId]/labels", params: { mailboxId } })}
-            />
-            <ManageRow
-              icon="document-text-outline"
-              label="Templates"
-              onPress={() => router.push({ pathname: "/m/[mailboxId]/templates", params: { mailboxId } })}
-            />
-            <ManageRow
-              icon="time-outline"
-              label="Scheduled sends"
-              onPress={() => router.push({ pathname: "/m/[mailboxId]/scheduled", params: { mailboxId } })}
-            />
-          </View>
-        }
         ListEmptyComponent={<EmptyState icon="folder-outline" title="No folders" />}
         contentContainerStyle={styles.listContent}
       />
     </View>
-  );
-}
-
-function ManageRow({
-  icon,
-  label,
-  onPress,
-}: {
-  icon: IconName;
-  label: string;
-  onPress: () => void;
-}) {
-  const theme = useTheme();
-  return (
-    <Pressable
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.row,
-        {
-          borderBottomColor: theme.border,
-          backgroundColor: pressed ? theme.backgroundSelected : "transparent",
-        },
-      ]}>
-      <Ionicons name={icon} size={22} color={theme.tint} />
-      <ThemedText type="default" style={styles.name}>
-        {label}
-      </ThemedText>
-      <Ionicons name="chevron-forward" size={18} color={theme.textSecondary} />
-    </Pressable>
   );
 }
 

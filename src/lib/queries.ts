@@ -62,7 +62,7 @@ async function invalidateMailbox(client: QueryClient, api: ScopedApi | null, mai
 export function useMailboxes(api: ScopedApi | null) {
   return useQuery({
     queryKey: ["mailboxes", ...(api ? sessionScope(api) : ["none"])],
-    enabled: Boolean(api) && api?.session.kind === "app",
+    enabled: Boolean(api),
     queryFn: async (): Promise<Mailbox[]> => requireApi(api).listMailboxes(),
   });
 }
@@ -74,7 +74,7 @@ export function useMailboxes(api: ScopedApi | null) {
 export function useAllEmails(api: ScopedApi | null, folder: string | null) {
   return useInfiniteQuery({
     queryKey: ["all-emails", ...(api ? sessionScope(api) : ["none"]), folder ?? "all"],
-    enabled: Boolean(api) && api?.session.kind === "app",
+    enabled: Boolean(api),
     initialPageParam: 1,
     queryFn: async ({ pageParam }): Promise<EmailsResult> =>
       requireApi(api).listAllEmails(folder, { page: pageParam, limit: PAGE_SIZE }),
